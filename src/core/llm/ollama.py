@@ -39,7 +39,7 @@ AVAILABLE_MODELS = {
             'temperature': 0.5,
             'num_ctx': 16384
         },
-        'tools': False
+        'tools': True
     }
 }
 logger = get_logger(__name__)
@@ -49,8 +49,6 @@ logger = get_logger(__name__)
 class Ollama(Provider):
     """Client for Ollama."""
     client: Client | None = None
-
-
 
     def __post_init__(self):
         if self.__match_model() is None:

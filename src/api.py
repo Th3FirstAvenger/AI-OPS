@@ -16,12 +16,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import API_SETTINGS
 from src.routers import session_router
 from src.utils import get_logger
+from src.routers.rag import rag_router
 
 logger = get_logger(__name__)
 
 # --- Initialize API
 app = FastAPI()
 app.include_router(session_router)
+# app.include_router(rag_router, prefix="/api/v1")
+app.include_router(rag_router)
 
 # TODO: implement proper CORS
 app.add_middleware(
@@ -31,6 +34,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 if API_SETTINGS.PROFILE:
     try:

@@ -10,6 +10,8 @@ from src.core import Conversation
 from src.core.llm import LLM
 from src.core.memory import Message, Role
 from src.utils import get_logger, LOGS_PATH
+from src.core.knowledge.store import HybridRetriever
+
 
 logger = get_logger(__name__)
 
@@ -92,6 +94,10 @@ class DefaultArchitecture(AgentArchitecture):
             'reasoning': reasoning_prompt,
             'tool': tool_prompt
         }
+        # Initialize the HybridRetriever for context retrieval not implemented yet
+        # TODO: Implement HybridRetriever
+        # self.hybrid_retriever = HybridRetriever()
+        self.hybrid_retriever = None
 
         self.__thought_parser: State = State()
         self.__tool_pattern = r"\s*({[^}]*(?:{[^}]*})*[^}]*}|\[[^\]]*(?:\[[^\]]*\])*[^\]]*\])\s*$"
@@ -117,35 +123,22 @@ class DefaultArchitecture(AgentArchitecture):
         self.token_logger.setLevel(logging.DEBUG)
         self.token_logger.addHandler(logger_handler)
 
+
     def query(
         self,
         session_id: int,
         user_input: str
     ) -> Generator:
-        """Handles the input from the user and generates responses in a
-        streaming manner.
-
-        :param session_id: The session identifier.
-        :param user_input: The user's input query.
-
-        :returns: Generator with response text in chunks."""
-        # TODO: yield (chunk, context_length)
-        # create a new conversation if not exists
+        """Handles the input from the user and generates responses in a streaming manner."""
         if not self.memory[session_id]:
             self.new_session(session_id)
 
-        # route query
         assistant_index = self.__get_assistant_index(user_input)
-
-        # RESPONSE
         prompt = self.__prompts['general']
         user_input_with_tool_call = f'{user_input}'
         if assistant_index == 2:
             prompt = self.__prompts['reasoning']
         elif assistant_index == 3:
-            # Execute tool call and temporarily concatenate output to user
-            # message, but the tool call result is thrown away (for simplicity)
-            # in order to avoid display the result when load_session is called.
             tool_call_result: str | None = None
             tool_call_str: str | None = None
             for tool_call_execution in self.__tool_call(
@@ -156,7 +149,6 @@ class DefaultArchitecture(AgentArchitecture):
                 if tool_call_state == 'error':
                     break
                 elif tool_call_state == 'running':
-                    # should inform client of tool execution ...
                     tool_call_str = tool_call_execution['message']
                 else:
                     tool_call_result = tool_call_execution['message']
@@ -169,7 +161,6 @@ class DefaultArchitecture(AgentArchitecture):
                 )
                 assistant_index = 1
 
-        # Replace system prompt with the one built for specific assistant type
         conversation = self.memory[session_id]
         conversation.messages[0] = Message(role=Role.SYS, content=prompt)
         conversation += Message(
@@ -177,13 +168,18 @@ class DefaultArchitecture(AgentArchitecture):
             content=user_input_with_tool_call
         )
 
-        # note: conversation.message_dict doesn't care about context length
+        # TODO: Implement HybridRetriever
+        """retrieved_results = self.hybrid_retriever.retrieve(query=user_input, top_k=5, use_graph=True)
+        context = "\n".join([result["text"] for result in retrieved_results])
+
+        augmented_input = f"Contexto recuperado:\n{context}\n\nConsulta:\n{user_input_with_tool_call}"
+        conversation.messages[-1].content = augmented_input
+        logger.debug(f"Augmented Input: {augmented_input}")"""
+
         response = ''
-        # yes, I called ass_tokens the assistant tokens
         response_tokens = 0
         for chunk, usr_tokens, ass_tokens in self.llm.query(conversation):
             if usr_tokens:
-                # set last message (usr) token usage
                 conversation.messages[-1].set_tokens(usr_tokens)
                 response_tokens = ass_tokens
                 break
@@ -197,9 +193,7 @@ class DefaultArchitecture(AgentArchitecture):
                 if generation_state == State.SPEAKING:
                     response += c
                     yield c
-                # add thinking yield
 
-        # remove tool call result from user input and add response to conversation
         conversation.messages[-1].content = user_input
         conversation += Message(
             role=Role.ASSISTANT,
@@ -208,6 +202,7 @@ class DefaultArchitecture(AgentArchitecture):
 
         conversation.messages[-1].set_tokens(response_tokens)
         logger.debug(f'CONVERSATION: {conversation}')
+
 
     def new_session(self, session_id: int, name: str):
         """Create a new conversation if not exists"""

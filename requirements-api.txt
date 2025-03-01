@@ -11,3 +11,10 @@ lxml_html_clean
 spacy[lookups]
 psutil
 uvicorn
+qdrant-client>=1.7.0
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4  # Use faiss-gpu if you have GPU support
+rank-bm25>=0.2.2
+networkx>=3.1
+beautifulsoup4>=4.12.2
+markdown>=3.5

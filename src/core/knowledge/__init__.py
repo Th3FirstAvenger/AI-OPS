@@ -1,7 +1,21 @@
 """Knowledge Module: contains vector database and documents classes"""
 from pathlib import Path
 from tool_parse import ToolRegistry
-from src.core.knowledge.store import Store, Collection
+
+# Initialize RAG (basic version for now)
+from src.core.knowledge.store import Store
+from src.config import RAG_SETTINGS
+from .collections import Collection, Topic
+from .store import Store
+__all__ = ['Collection', 'Topic', 'Store']
+
+rag_store = Store(
+    base_path=str(Path(Path.home() / '.aiops')),
+    url=RAG_SETTINGS.RAG_URL,
+    embedding_url=RAG_SETTINGS.EMBEDDING_URL,
+    embedding_model=RAG_SETTINGS.EMBEDDING_MODEL,
+    in_memory=True  # Forzar in_memory=True para evitar problemas con directorios
+)
 
 
 def initialize_knowledge(vdb: Store):

@@ -22,6 +22,7 @@ from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import MarkdownLexer
 from prompt_toolkit.keys import Keys
 from pydantic import BaseModel, validate_call
+from src.config import RAG_SETTINGS, AGENT_SETTINGS
 
 VERSION = "0.0.0"
 
@@ -90,13 +91,13 @@ class AgentClient:
             'save': self.save_session,
             'delete': self.delete_session,
             'rename': self.rename_session,
-            'list sessions': self.list_sessions,
+            'list_sessions': self.list_sessions,
             'load': self.load_session,
             
 
             # RAG is disabled in the current version
-            # 'list collections': self.__list_collections,
-            # 'create collection': self.__create_collection
+            'list_collections': self.__list_collections,
+            'create_collection': self.__create_collection,
 
             # Add new command to toggle thinking
             'toggle thinking': self.toggle_thinking,
@@ -522,9 +523,9 @@ class AgentClient:
         self.console.print("- [bold blue]list sessions[/]   : Show the saved sessions.")        
 
         # RAG Related
-        # self.console.print("\n[bold white]RAG Related[/]")
-        # self.console.print("- [bold blue]list collections[/]  : Lists all collections in RAG.")
-        # self.console.print("- [bold blue]create collection[/] : Upload a collection to RAG.")
+        self.console.print("\n[bold white]RAG Related[/]")
+        self.console.print("- [bold blue]list_collections[/]  : Lists all collections in RAG.")
+        self.console.print("- [bold blue]create_collection[/] : Upload a collection to RAG.")
 
         self.console.print("\n")
 
@@ -573,7 +574,7 @@ def main():
 
     try:
         args = parser.parse_args(sys.argv[1:])
-        model = os.getenv('MODEL', 'mistral')  # Usa os.getenv en vez de acceder a os.environ directamente
+        model = AGENT_SETTINGS.MODEL
 
         client = AgentClient(api_url=args.api, model_name=model)
         client.run()

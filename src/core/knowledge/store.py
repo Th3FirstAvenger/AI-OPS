@@ -1,7 +1,7 @@
-"""RAG Vector Database interface"""
+"""RAG Vector Database interface with support for both local storage and Qdrant"""
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Union, Any
 
 import httpx
 import ollama
@@ -9,14 +9,368 @@ import spacy
 import qdrant_client.http.exceptions
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
+from sentence_transformers import SentenceTransformer, util
+import numpy as np
+from rank_bm25 import BM25Okapi
+import networkx as nx
 
 from src.core.llm import ProviderError
 from src.core.knowledge.collections import Collection, Document, Topic
+from src.utils import get_logger
+from src.core.knowledge.collections import MarkdownParser
+from src.core.knowledge.collections import DocumentChunk, chunk
+from src.config import RAG_SETTINGS
 
 
+
+# Initialize logging
+logger = get_logger(__name__)
+
+# Load spaCy model for text processing
 nlp = spacy.load("en_core_web_md")
 
+# Define reusable model names
+RERANKER_MODEL = RAG_SETTINGS.RERANKER_MODEL
+EMBEDDING_MODEL = RAG_SETTINGS.EMBEDDING_MODEL
+RAG_URL = RAG_SETTINGS.RAG_URL
+RAG_API_KEY = RAG_SETTINGS.RAG_API_KEY
+USE_HYBRID = RAG_SETTINGS.USE_HYBRID
+EMBEDDING_URL = RAG_SETTINGS.EMBEDDING_URL
+IN_MEMORY = RAG_SETTINGS.IN_MEMORY
 
+
+class GraphRAG:
+    """Graph-based RAG that builds and queries a knowledge graph from document chunks"""
+    
+    def __init__(self):
+        self.graph = nx.DiGraph()
+        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        
+    def build_graph(self, chunks: List[DocumentChunk]):
+        """Build a knowledge graph from document chunks"""
+        # Add nodes for each chunk
+        for i, chunk in enumerate(chunks):
+            node_id = f"chunk_{i}"
+            chunk.node_id = node_id
+            
+            # Add the chunk as a node
+            self.graph.add_node(
+                node_id,
+                text=chunk.text,
+                metadata=chunk.metadata
+            )
+            
+            # Connect to previous chunk from same document (sequence edge)
+            if i > 0 and chunks[i-1].metadata["source"] == chunk.metadata["source"]:
+                prev_node_id = chunks[i-1].node_id
+                self.graph.add_edge(prev_node_id, node_id, type="sequence")
+                
+            # Connect chunks with same header context (semantic edge)
+            for j in range(i):
+                if (chunks[j].metadata["source"] == chunk.metadata["source"] and
+                    chunks[j].metadata["header_context"] == chunk.metadata["header_context"]):
+                    self.graph.add_edge(chunks[j].node_id, node_id, type="same_section")
+        
+        # Add semantic similarity edges between chunks
+        self._add_semantic_edges(chunks)
+        
+    def _add_semantic_edges(self, chunks: List[DocumentChunk], threshold: float = 0.7):
+        """Add edges based on semantic similarity between chunks"""
+        # Create embeddings for all chunks
+        texts = [chunk.text for chunk in chunks]
+        embeddings = self.embedding_model.encode(texts, convert_to_tensor=True)
+        
+        # Calculate cosine similarity between all pairs
+        cosine_scores = util.pytorch_cos_sim(embeddings, embeddings)
+        
+        # Add edges for similar chunks
+        for i in range(len(chunks)):
+            for j in range(i+1, len(chunks)):
+                similarity = cosine_scores[i][j].item()
+                if similarity > threshold:
+                    # Add bidirectional semantic edges
+                    self.graph.add_edge(
+                        chunks[i].node_id, 
+                        chunks[j].node_id, 
+                        type="semantic",
+                        weight=similarity
+                    )
+                    self.graph.add_edge(
+                        chunks[j].node_id, 
+                        chunks[i].node_id, 
+                        type="semantic",
+                        weight=similarity
+                    )
+    
+    def query_graph(self, query: str, top_k: int = 3) -> List[Dict]:
+        """Query the graph for relevant information"""
+        # Get initial nodes based on similarity to query
+        query_embedding = self.embedding_model.encode(query, convert_to_tensor=True)
+        
+        node_scores = []
+        for node in self.graph.nodes():
+            node_text = self.graph.nodes[node]["text"]
+            node_embedding = self.embedding_model.encode(node_text, convert_to_tensor=True)
+            similarity = util.pytorch_cos_sim(query_embedding, node_embedding).item()
+            node_scores.append((node, similarity))
+        
+        # Sort by similarity score
+        node_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # Get top k nodes and their neighborhoods
+        results = []
+        visited_nodes = set()
+        
+        for node, score in node_scores[:top_k]:
+            if node in visited_nodes:
+                continue
+                
+            # Add the node itself
+            results.append({
+                "text": self.graph.nodes[node]["text"],
+                "metadata": self.graph.nodes[node]["metadata"],
+                "relevance": score
+            })
+            visited_nodes.add(node)
+            
+            # Add context from the neighborhood (1-hop neighbors)
+            for neighbor in self.graph.neighbors(node):
+                if neighbor not in visited_nodes:
+                    edge_data = self.graph.get_edge_data(node, neighbor)
+                    edge_weight = edge_data.get("weight", 0.5)
+                    
+                    results.append({
+                        "text": self.graph.nodes[neighbor]["text"],
+                        "metadata": self.graph.nodes[neighbor]["metadata"],
+                        "relevance": score * edge_weight,  # Scale by edge weight
+                        "relation": edge_data.get("type", "related")
+                    })
+                    visited_nodes.add(neighbor)
+        
+        # Re-sort by relevance
+        results.sort(key=lambda x: x["relevance"], reverse=True)
+        
+        return results[:top_k]
+
+
+class HybridRetriever:
+    """Hybrid retrieval system combining BM25, FAISS, and neural reranking"""
+    
+    def __init__(self):
+        self.chunks = []
+        self.bm25 = None
+        self.faiss_index = None
+        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        self.reranker_model = SentenceTransformer(RERANKER_MODEL)
+        self.nlp = spacy.load("en_core_web_md")
+        self.graph_rag = GraphRAG()
+        self.corpus_tokenized = []
+        self.dimension = self.embedding_model.get_sentence_embedding_dimension()
+        
+    def add_documents(self, documents: List[Document], use_graph: bool = True):
+        """Process and index documents"""
+        chunks = []
+        for doc in documents:
+            # Check if it's a markdown document
+            if doc.name.endswith('.md'):
+                markdown_parser = MarkdownParser()
+                md_chunks = markdown_parser.parse_markdown(doc.content, doc.name)
+                chunks.extend(md_chunks)
+            else:
+                # Use existing chunking for non-markdown documents
+                text_chunks = chunk(doc)
+                for i, text in enumerate(text_chunks):
+                    chunks.append(DocumentChunk(
+                        text=text,
+                        metadata={
+                            "source": doc.name,
+                            "topic": str(doc.topic),
+                            "chunk_id": i
+                        }
+                    ))
+        
+        # Store all chunks
+        self.chunks = chunks
+        
+        # Create BM25 index
+        self._create_bm25_index()
+        
+        # Create FAISS index
+        self._create_faiss_index()
+        
+        # Build knowledge graph if requested
+        if use_graph:
+            self.graph_rag.build_graph(chunks)
+    
+    def _create_bm25_index(self):
+        """Create BM25 index for lexical search"""
+        # Tokenize all chunks
+        self.corpus_tokenized = []
+        for chunk in self.chunks:
+            doc = self.nlp(chunk.text)
+            tokens = [token.text.lower() for token in doc if not token.is_stop and not token.is_punct]
+            self.corpus_tokenized.append(tokens)
+            chunk.bm25_tokens = tokens
+        
+        # Create BM25 index
+        self.bm25 = BM25Okapi(self.corpus_tokenized)
+    
+    def _create_faiss_index(self):
+        """Create FAISS index for semantic search"""
+        # Create embeddings for all chunks
+        embeddings = []
+        for chunk in self.chunks:
+            embedding = self.embedding_model.encode(chunk.text)
+            chunk.embedding = embedding
+            embeddings.append(embedding)
+        
+        # Convert to numpy array
+        embeddings_np = np.array(embeddings).astype('float32')
+        
+        # Create FAISS index
+        import faiss
+        self.faiss_index = faiss.IndexFlatL2(self.dimension)
+        self.faiss_index.add(embeddings_np)
+    
+    def retrieve(self, query: str, top_k: int = 10, use_graph: bool = True) -> List[Dict]:
+        """Retrieve relevant chunks using hybrid retrieval"""
+        # 1. Get BM25 results
+        bm25_results = self._bm25_search(query, top_k)
+        
+        # 2. Get FAISS results
+        faiss_results = self._faiss_search(query, top_k)
+        
+        # 3. Get Graph results if requested
+        graph_results = []
+        if use_graph:
+            graph_results = self.graph_rag.query_graph(query, top_k=top_k//2)
+        
+        # 4. Combine results
+        combined_results = self._combine_results(bm25_results, faiss_results, graph_results)
+        
+        # 5. Rerank results
+        reranked_results = self._rerank_results(query, combined_results, top_k=DEFAULT_RERANK_TOP_K)
+        
+        return reranked_results
+    
+    def _bm25_search(self, query: str, top_k: int) -> List[Dict]:
+        """Perform BM25 search"""
+        # Tokenize query
+        doc = self.nlp(query)
+        query_tokens = [token.text.lower() for token in doc if not token.is_stop and not token.is_punct]
+        
+        # Get BM25 scores
+        bm25_scores = self.bm25.get_scores(query_tokens)
+        
+        # Get top-k chunks
+        top_indices = np.argsort(bm25_scores)[-top_k:][::-1]
+        
+        results = []
+        for i in top_indices:
+            results.append({
+                "chunk": self.chunks[i],
+                "text": self.chunks[i].text,
+                "metadata": self.chunks[i].metadata,
+                "score": float(bm25_scores[i]),
+                "method": "bm25"
+            })
+        
+        return results
+    
+    def _faiss_search(self, query: str, top_k: int) -> List[Dict]:
+        """Perform FAISS semantic search"""
+        # Encode query
+        query_embedding = self.embedding_model.encode(query)
+        query_embedding = np.array([query_embedding]).astype('float32')
+        
+        # Search in FAISS index
+        distances, indices = self.faiss_index.search(query_embedding, top_k)
+        
+        results = []
+        for i, idx in enumerate(indices[0]):
+            results.append({
+                "chunk": self.chunks[idx],
+                "text": self.chunks[idx].text,
+                "metadata": self.chunks[idx].metadata,
+                "score": float(1.0 / (1.0 + distances[0][i])),  # Convert distance to similarity score
+                "method": "faiss"
+            })
+        
+        return results
+    
+    def _combine_results(self, bm25_results: List[Dict], faiss_results: List[Dict], 
+                         graph_results: List[Dict]) -> List[Dict]:
+        """Combine results from different retrieval methods"""
+        # Use a dictionary to track unique chunks
+        combined = {}
+        
+        # Process BM25 results
+        for result in bm25_results:
+            chunk_id = result["metadata"]["source"] + "_" + str(result["metadata"]["chunk_id"])
+            if chunk_id not in combined:
+                combined[chunk_id] = result
+                result["score_bm25"] = result["score"]
+            else:
+                combined[chunk_id]["score_bm25"] = result["score"]
+        
+        # Process FAISS results
+        for result in faiss_results:
+            chunk_id = result["metadata"]["source"] + "_" + str(result["metadata"]["chunk_id"])
+            if chunk_id not in combined:
+                combined[chunk_id] = result
+                result["score_faiss"] = result["score"]
+            else:
+                combined[chunk_id]["score_faiss"] = result["score"]
+                # Update the maximum score
+                if result["score"] > combined[chunk_id]["score"]:
+                    combined[chunk_id]["score"] = result["score"]
+        
+        # Process Graph results
+        for result in graph_results:
+            chunk_id = result["metadata"]["source"] + "_" + str(result["metadata"]["chunk_id"])
+            if chunk_id not in combined:
+                # Convert graph result format to match others
+                combined[chunk_id] = {
+                    "text": result["text"],
+                    "metadata": result["metadata"],
+                    "score": result["relevance"],
+                    "score_graph": result["relevance"],
+                    "method": "graph"
+                }
+            else:
+                combined[chunk_id]["score_graph"] = result["relevance"]
+                # Update the maximum score
+                if result["relevance"] > combined[chunk_id]["score"]:
+                    combined[chunk_id]["score"] = result["relevance"]
+        
+        # Convert back to list
+        return list(combined.values())
+    
+    def _rerank_results(self, query: str, results: List[Dict], top_k: int) -> List[Dict]:
+        """Rerank results using a cross-encoder model"""
+        if not results:
+            return []
+            
+        # Prepare input for reranker
+        pairs = [(query, result["text"]) for result in results]
+        
+        # Get reranker scores
+        rerank_scores = self.reranker_model.predict(pairs)
+        
+        # Add reranker scores to results
+        for i, result in enumerate(results):
+            result["score_rerank"] = float(rerank_scores[i])
+            # Use reranker score as the final score
+            result["score"] = result["score_rerank"]
+        
+        # Sort by reranker score
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Return top-k results
+        return results[:top_k]
+
+
+# Original Store class (kept for backward compatibility)
 class Store:
     """Act as interface for Qdrant database.
     Manages Collections and implements the Upload/Retrieve operations."""
@@ -27,7 +381,7 @@ class Store:
         embedding_url: str = 'http://localhost:11434',
         embedding_model: str = 'nomic-embed-text',
         url: str = 'http://localhost:6333',
-        in_memory: bool = False,
+        in_memory: bool = IN_MEMORY,
     ):
         """
         :param embedding_url:
@@ -253,7 +607,8 @@ class Store:
         for p in datasets_path.iterdir():
             # `i` is not incremented for each directory entry
             if not (p.is_file() and p.suffix == '.json'):
-                p.unlink()
+                if p.exists():
+                    p.unlink()
                 continue
 
             with open(p, 'r', encoding='utf-8') as fp:
@@ -297,38 +652,283 @@ class Store:
         return self._collections[name]
 
 
-def chunk(document: Document):
-    """Return chunks of a Document that will be added to the Vector Database"""
-    return chunk_str(document.content)
+# New QdrantStore class implementation
+class QdrantStore:
+    """Qdrant-based knowledge store with hybrid retrieval and markdown support"""
+    
+    def __init__(
+        self,
+        qdrant_url: str = "http://localhost:6333",
+        qdrant_api_key: str = None,
+        embedding_model: str = "nomic-embed-text",
+        use_hybrid: bool = True
+    ):
+        """Initialize the Qdrant-based knowledge store
+        
+        :param qdrant_url: URL of the Qdrant server
+        :param qdrant_api_key: API key for Qdrant Cloud (if used)
+        :param embedding_model: Model to use for embeddings
+        :param use_hybrid: Whether to use hybrid retrieval
+        """
+        # Initialize Qdrant client
+        self.client = QdrantClient(
+            url=qdrant_url,
+            api_key=qdrant_api_key
+        )
+        
+        self.collections = {}
+        self.hybrid_retriever = HybridRetriever() if use_hybrid else None
+        self.collections_indexed = set()
+        self.embedding_model_name = embedding_model
+        self.embedding_model = SentenceTransformer(embedding_model)
+        self.embedding_size = self.embedding_model.get_sentence_embedding_dimension()
 
+    def create_collection(self, collection: Collection, progress_bar: bool = False):
+        """Create a new collection in Qdrant and index it with the hybrid retriever"""
+        logger.info(f"📢 Attempting to create collection: {collection.title}")
 
-def chunk_str(document: str):
-    """Chunks a text string, the chunking strategy is:
-    NLP sentence extraction -> sentence grouping by similarity.
-    """
-    doc = nlp(document)
-    sentences = [
-        sent for sent in list(doc.sents)
-        if str(sent).strip() not in ['*']
-    ]
+        # Check if collection already exists
+        try:
+            collection_info = self.client.get_collection(collection.title)
+            if collection_info:
+                logger.info(f"✅ Collection {collection.title} already exists in Qdrant")
+                return  # No need to recreate it
+        except Exception as e:
+            logger.warning(f"⚠️ Collection {collection.title} does not exist. Proceeding with creation. Error: {str(e)}")
 
-    similarities = []
-    for i in range(1, len(sentences)):
-        if not sentences[i - 1].has_vector or not sentences[i].has_vector:
-            similarities.append(0.0)
-        else:
-            sim = sentences[i-1].similarity(sentences[i])
-            similarities.append(sim)
+        # Try to create the collection
+        try:
+            self.client.create_collection(
+                collection_name=collection.title,
+                vectors_config=models.VectorParams(
+                    size=self.embedding_size,
+                    distance=models.Distance.COSINE
+                )
+            )
+            logger.info(f"✅ Created collection {collection.title} in Qdrant")
+        except Exception as e:
+            logger.error(f"❌ Error creating collection {collection.title}: {e}")
+            return
 
-    threshold = 0.5
-    max_sent = 4
-    sentences = [str(sent) for sent in sentences]
-    groups = [[sentences[0]]]
-    for i in range(1, len(sentences)):
-        if len(groups[-1]) > max_sent or similarities[i-1] < threshold:
-            groups.append([sentences[i]])
-        else:
-            groups[-1].append(sentences[i])
+        # Store collection information
+        self.collections[collection.title] = collection
 
-    _chunks = [" ".join(g) for g in groups]
-    return [_ch for _ch in _chunks if len(_ch) > 100]
+        # Index documents in Qdrant
+        if collection.documents:
+            logger.info(f"📢 Uploading {len(collection.documents)} documents to {collection.title}")
+            
+            self._upload_documents_to_qdrant(collection.documents, collection.title)
+            
+            if self.hybrid_retriever:
+                self.hybrid_retriever.add_documents(collection.documents)
+                self.collections_indexed.add(collection.title)
+                logger.info(f"✅ Indexed collection {collection.title} in hybrid retriever")
+
+        """def create_collection(self, collection: Collection, progress_bar: bool = False):
+        # Create a new collection in Qdrant and index it with the hybrid retriever
+        logger.info(f"Attempting to create collection: {collection.title}")
+
+        # Create collection in Qdrant if it doesn't exist
+        try:
+            collection_info = self.client.get_collection(collection.title)
+            logger.info(f"Collection {collection.title} already exists in Qdrant")
+        except Exception:
+            # Collection doesn't exist, create it
+            self.client.create_collection(
+                collection_name=collection.title,
+                vectors_config=models.VectorParams(
+                    size=self.embedding_size,
+                    distance=models.Distance.COSINE
+                )
+            )
+            logger.info(f"Created collection {collection.title} in Qdrant")
+        except Exception as e:
+            logger.error(f"Error creating collection {collection.title}: {e}")
+            return
+        
+        # Store collection information
+        self.collections[collection.title] = collection
+    
+        # Index documents with Qdrant
+        if collection.documents:
+            self._upload_documents_to_qdrant(collection.documents, collection.title)
+            
+            # Also index with hybrid retriever if enabled
+            if self.hybrid_retriever:
+                self.hybrid_retriever.add_documents(collection.documents)
+                self.collections_indexed.add(collection.title)"""
+
+    def _upload_documents_to_qdrant(self, documents: List[Document], collection_name: str):
+        """Upload documents to Qdrant collection"""
+        points = []
+        for doc_idx, doc in enumerate(documents):
+            # Process the document to create chunks
+            if doc.name.endswith('.md'):
+                markdown_parser = MarkdownParser()
+                chunks = markdown_parser.parse_markdown(doc.content, doc.name)
+            else:
+                # Use existing chunking for non-markdown documents
+                text_chunks = chunk(doc)
+                chunks = []
+                for i, text in enumerate(text_chunks):
+                    chunks.append(DocumentChunk(
+                        text=text,
+                        metadata={
+                            "source": doc.name,
+                            "topic": str(doc.topic),
+                            "chunk_id": i
+                        }
+                    ))
+            
+            # Create points for Qdrant
+            for chunk_idx, chunk in enumerate(chunks):
+                # Create embedding
+                embedding = self.embedding_model.encode(chunk.text)
+                
+                # Create point
+                point_id = f"{doc_idx}_{chunk_idx}"
+                point = models.PointStruct(
+                    id=point_id,
+                    vector=embedding.tolist(),
+                    payload={
+                        "text": chunk.text,
+                        "metadata": chunk.metadata
+                    }
+                )
+                points.append(point)
+        
+        # Upload points to Qdrant in batches
+        batch_size = 100
+        for i in range(0, len(points), batch_size):
+            batch = points[i:i+batch_size]
+            self.client.upsert(
+                collection_name=collection_name,
+                points=batch
+            )
+            logger.info(f"Uploaded batch {i//batch_size + 1}/{(len(points)-1)//batch_size + 1} to {collection_name}")
+
+    def upload(self, document: Document, collection_name: str):
+        """Upload a document to a collection and index it"""
+        # Check if collection exists
+        if collection_name not in self.collections:
+            raise ValueError(f"Collection {collection_name} does not exist")
+        
+        # Upload document to Qdrant
+        self._upload_documents_to_qdrant([document], collection_name)
+        
+        # Add document to the collection
+        self.collections[collection_name].documents.append(document)
+        
+        # Index with hybrid retriever if enabled
+        if self.hybrid_retriever:
+            self.hybrid_retriever.add_documents([document])
+
+    def retrieve_from(self, query: str, collection_name: str, limit: int = 5, 
+                    threshold: float = 0.5, use_hybrid: bool = True, use_graph: bool = True) -> list[str] | None:
+        """Enhanced retrieval function using hybrid retrieval system and Qdrant"""
+        if not query:
+            raise ValueError('Query cannot be empty')
+        if collection_name not in self.collections:
+            raise ValueError(f'Collection {collection_name} does not exist')
+            
+        # Use hybrid retrieval if requested and available
+        if use_hybrid and self.hybrid_retriever:
+            # Check if collection is indexed with hybrid retriever
+            if collection_name not in self.collections_indexed and self.collections[collection_name].documents:
+                # If not, index it now
+                self.hybrid_retriever.add_documents(self.collections[collection_name].documents)
+                self.collections_indexed.add(collection_name)
+                
+            # Perform hybrid retrieval
+            retrieval_results = self.hybrid_retriever.retrieve(
+                query=query, 
+                top_k=limit,
+                use_graph=use_graph
+            )
+            
+            # Filter results based on collection
+            filtered_results = [
+                result for result in retrieval_results
+                if result["metadata"]["source"].startswith(collection_name)
+            ]
+            
+            # Return the text of the top results
+            if filtered_results:
+                return [result["text"] for result in filtered_results]
+        
+        # Fall back to direct Qdrant search
+        return self._qdrant_search(query, collection_name, limit, threshold)
+
+    def _qdrant_search(self, query: str, collection_name: str, limit: int, threshold: float) -> list[str] | None:
+        """Search using Qdrant's vector similarity search"""
+        # Encode query
+        query_embedding = self.embedding_model.encode(query).tolist()
+        
+        # Search in Qdrant
+        search_results = self.client.search(
+            collection_name=collection_name,
+            query_vector=query_embedding,
+            limit=limit,
+            score_threshold=threshold
+        )
+        
+        # Extract text from results
+        if not search_results:
+            return None
+            
+        results = []
+        for result in search_results:
+            text = result.payload.get("text")
+            if text:
+                results.append(text)
+        
+        return results if results else None
+        
+    @staticmethod
+    def get_available_datasets() -> list[Collection]:
+        """Searches in USER/.aiops/datasets/ directory for available collections"""
+        i = 0
+        collections = []
+        datasets_path = Path(Path.home() / '.aiops' / 'datasets')
+        if not datasets_path.exists():
+            return []
+
+        for p in datasets_path.iterdir():
+            # `i` is not incremented for each directory entry
+            if not (p.is_file() and p.suffix == '.json'):
+                if p.exists():
+                    p.unlink()
+                continue
+
+            with open(p, 'r', encoding='utf-8') as fp:
+                data = json.load(fp)
+
+            topics = []
+            documents = []
+            for item in data:
+                topic = Topic(item['category'])
+                document = Document(
+                    name=item['title'],
+                    content=item['content'],
+                    topic=topic
+                )
+                topics.append(topic)
+                documents.append(document)
+
+            collection = Collection(
+                collection_id=i,
+                title=p.name,
+                documents=documents,
+                topics=topics
+            )
+
+            collections.append(collection)
+            i += 1
+
+        return collections
+
+    def get_collection(self, name):
+        """Get a collection by name"""
+        if name not in self.collections:
+            return None
+        return self.collections[name]
