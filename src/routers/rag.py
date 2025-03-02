@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, Form, UploadFile, Depends, HTTPException
 from pathlib import Path
 
 from src.config import RAG_SETTINGS
-from src.core.knowledge import Collection, Store, Topic
+from src.core.knowledge import Collection, Topic, QdrantStore
 from src.core.knowledge.collections import MarkdownParser, Document
 from src.utils import get_logger
 
@@ -18,14 +18,14 @@ logger = get_logger(__name__)
 rag_router = APIRouter()
 
 @lru_cache()
-def get_rag_store() -> Store:
+def get_rag_store() -> QdrantStore:
     """
     Singleton factory para crear y reutilizar la instancia de Store.
     El decorador lru_cache asegura que la función solo se ejecute una vez.
     """
     try:
         logger.info("Initializing RAG store...")
-        store = Store(
+        store = QdrantStore(
             base_path=str(Path(Path.home() / '.aiops')),
             url=RAG_SETTINGS.RAG_URL,
             embedding_url=RAG_SETTINGS.EMBEDDING_URL,
@@ -41,7 +41,7 @@ def get_rag_store() -> Store:
         raise
 
 @rag_router.get('/collections/list')
-def list_collections(store: Store = Depends(get_rag_store)):
+def list_collections(store: QdrantStore = Depends(get_rag_store)):
     """
     Returns available Collections.
     Returns a JSON list of available Collections.
@@ -84,7 +84,7 @@ def list_collections(store: Store = Depends(get_rag_store)):
 async def create_collection(
     title: str = Form(...),
     file: Optional[UploadFile] = File(None),
-    store: Store = Depends(get_rag_store)
+    store: QdrantStore = Depends(get_rag_store)
 ):
     """
     Creates a new Collection.
@@ -177,7 +177,7 @@ async def create_collection(
 
 
 @rag_router.post('/collections/upload')
-async def upload_document(store: Store = Depends(get_rag_store)):
+async def upload_document(store: QdrantStore = Depends(get_rag_store)):
     """Uploads a document to an existing collection."""
     # TODO: Implementar subida de documentos a colecciones existentes
     return {"message": "Not implemented yet"}
@@ -190,7 +190,7 @@ async def search_collection(
     query: str,
     limit: int = 5,
     threshold: float = 0.5,
-    store: Store = Depends(get_rag_store)
+    store: QdrantStore = Depends(get_rag_store)
 ):
     """
     Search in a specific collection.

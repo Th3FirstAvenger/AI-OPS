@@ -11,10 +11,13 @@ from src.core.llm import LLM
 from src.core.memory import Message, Role
 from src.utils import get_logger, LOGS_PATH
 from src.core.knowledge.store import HybridRetriever
+from src.core.knowledge.store import QdrantStore
+
 
 
 logger = get_logger(__name__)
 
+rag_store = QdrantStore()
 
 class State:
     """
@@ -97,7 +100,7 @@ class DefaultArchitecture(AgentArchitecture):
         # Initialize the HybridRetriever for context retrieval not implemented yet
         # TODO: Implement HybridRetriever
         self.hybrid_retriever = HybridRetriever()
-        self.hybrid_retriever = None
+        #self.hybrid_retriever = None
 
         self.__thought_parser: State = State()
         self.__tool_pattern = r"\s*({[^}]*(?:{[^}]*})*[^}]*}|\[[^\]]*(?:\[[^\]]*\])*[^\]]*\])\s*$"
@@ -168,12 +171,15 @@ class DefaultArchitecture(AgentArchitecture):
         )
 
         # TODO: Implement HybridRetriever
-        retrieved_results = self.hybrid_retriever.retrieve(query=user_input, top_k=5, use_graph=True)
-        context = "\n".join([result["text"] for result in retrieved_results])
+        if self.hybrid_retriever is not None:
+            retrieved_results = self.hybrid_retriever.retrieve(query=user_input, top_k=5, use_graph=True)
+            context = "\n".join([result["text"] for result in retrieved_results])
 
-        augmented_input = f"Contexto recuperado:\n{context}\n\nConsulta:\n{user_input_with_tool_call}"
-        conversation.messages[-1].content = augmented_input
-        logger.debug(f"Augmented Input: {augmented_input}")
+            augmented_input = f"Context restored:\n{context}\n\nQuery:\n{user_input_with_tool_call}"
+            conversation.messages[-1].content = augmented_input
+            logger.debug(f"Augmented Input: {augmented_input}")
+        else:
+            augmented_input = user_input_with_tool_call
 
         response = ''
         response_tokens = 0

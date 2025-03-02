@@ -3,39 +3,45 @@ from pathlib import Path
 from tool_parse import ToolRegistry
 
 # Initialize RAG (basic version for now)
-from src.core.knowledge.store import Store
+from src.core.knowledge.store import QdrantStore
 from src.config import RAG_SETTINGS
 from .collections import Collection, Topic
-from .store import Store
-__all__ = ['Collection', 'Topic', 'Store']
+from .collections import Collection, Topic
+__all__ = ['Collection', 'Topic', 'QdrantStore']
+
 from src.core.knowledge.embeddings import OllamaEmbeddings, OllamaReranker
 from src.core.knowledge.embeddings import create_ollama_embedding_provider, create_ollama_reranker
 
-try:
-    rag_store = Store(
-        base_path=str(Path(Path.home() / '.aiops')),
-        url=RAG_SETTINGS.RAG_URL,
-        embedding_url=RAG_SETTINGS.EMBEDDING_URL,
-        embedding_model=RAG_SETTINGS.EMBEDDING_MODEL,
-        in_memory=RAG_SETTINGS.IN_MEMORY,
-    )
-except ConnectionError:
-    # Crear un objeto Store con modo offline o con embeddings simulados
-    from src.utils import get_logger
-    logger = get_logger(__name__)
-    logger.warning("Failed to connect to RAG, using offline mode")
-    rag_store = Store(
-        base_path=str(Path(Path.home() / '.aiops')),
-        in_memory=True, 
-    )
+
+_rag_store = None
+
+def get_rag_store() -> QdrantStore:
+    global _rag_store
+    if _rag_store is None:
+        _rag_store = QdrantStore(
+            qdrant_url=RAG_SETTINGS.RAG_URL,
+            qdrant_api_key=RAG_SETTINGS.RAG_API_KEY,
+            embedding_model=RAG_SETTINGS.EMBEDDING_MODEL,
+            use_hybrid=RAG_SETTINGS.USE_HYBRID
+        )
+    return _rag_store
+
+"""_rag_store = None
+
+def get_rag_store() -> QdrantStore:
+    global _rag_store
+    if _rag_store is None:
+        _rag_store = QdrantStore()
+    return _rag_store"""
+
     
 
 
-def initialize_knowledge(vdb: Store):
+def initialize_knowledge(vdb: QdrantStore):
     """Used to initialize and keep updated the Knowledge Base.
     Already existing Collections will not be overwritten.
     :param vdb: the reference to the Knowledge Base"""
-    available = Store.get_available_datasets()
+    available = QdrantStore.get_available_datasets()
     print(f"[+] Available Datasets ({[c.title for c in available]})")
 
     existing: list[str] = list(vdb.collections.keys())
@@ -53,7 +59,7 @@ def load_rag(
         embedding_url: str,
         tool_registry: ToolRegistry,
 ):
-    store = Store(
+    store = QdrantStore(
         str(Path(Path.home() / '.aiops')),
         url=rag_endpoint,
         embedding_url=embedding_url,

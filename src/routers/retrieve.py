@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 retrieve_router = APIRouter()
 
 @retrieve_router.get("/retrieve")
+@retrieve_router.get("/retrieve")
 async def retrieve(
     query: str, 
     collection: str, 
