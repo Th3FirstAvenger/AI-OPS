@@ -3,9 +3,8 @@ from pathlib import Path
 from tool_parse import ToolRegistry
 
 # Initialize RAG (basic version for now)
-from src.core.knowledge.store import QdrantStore
+from src.core.knowledge.store import QdrantStore as Store
 from src.config import RAG_SETTINGS
-from .collections import Collection, Topic
 from .collections import Collection, Topic
 __all__ = ['Collection', 'Topic', 'QdrantStore']
 
@@ -15,10 +14,10 @@ from src.core.knowledge.embeddings import create_ollama_embedding_provider, crea
 
 _rag_store = None
 
-def get_rag_store() -> QdrantStore:
+def get_rag_store() -> Store:
     global _rag_store
     if _rag_store is None:
-        _rag_store = QdrantStore(
+        _rag_store = Store(
             qdrant_url=RAG_SETTINGS.RAG_URL,
             qdrant_api_key=RAG_SETTINGS.RAG_API_KEY,
             embedding_model=RAG_SETTINGS.EMBEDDING_MODEL,
@@ -37,11 +36,11 @@ def get_rag_store() -> QdrantStore:
     
 
 
-def initialize_knowledge(vdb: QdrantStore):
+def initialize_knowledge(vdb: Store):
     """Used to initialize and keep updated the Knowledge Base.
     Already existing Collections will not be overwritten.
     :param vdb: the reference to the Knowledge Base"""
-    available = QdrantStore.get_available_datasets()
+    available = Store.get_available_datasets()
     print(f"[+] Available Datasets ({[c.title for c in available]})")
 
     existing: list[str] = list(vdb.collections.keys())
@@ -59,7 +58,7 @@ def load_rag(
         embedding_url: str,
         tool_registry: ToolRegistry,
 ):
-    store = QdrantStore(
+    store = Store(
         str(Path(Path.home() / '.aiops')),
         url=rag_endpoint,
         embedding_url=embedding_url,

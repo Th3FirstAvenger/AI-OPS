@@ -1,4 +1,4 @@
-from src.core.knowledge import QdrantStore
+from src.core.knowledge.store import QdrantStore
 from src.core.memory import (
     Role,
     Message,

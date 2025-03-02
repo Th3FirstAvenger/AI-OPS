@@ -17,6 +17,7 @@ from src.core.knowledge.collections import Collection, Document, Topic
 from src.core.knowledge.collections import MarkdownParser, DocumentChunk, chunk
 from src.config import RAG_SETTINGS
 from src.utils import get_logger
+import uuid
 
 logger = get_logger(__name__)
 nlp = spacy.load("en_core_web_md")
@@ -33,11 +34,11 @@ class GraphRAG:
         )
             
     def build_graph(self, chunks: List[DocumentChunk]):
-        """Build a knowledge graph from document chunks"""
         for i, chunk in enumerate(chunks):
             node_id = f"chunk_{i}"
             chunk.node_id = node_id
-            self.graph.add_node(node_id, text=chunk.text, metadata=chunk.metadata)
+            embedding = self.embedding_model.embed_query(chunk.text)  
+            self.graph.add_node(node_id, text=chunk.text, metadata=chunk.metadata, embedding=embedding)
             if i > 0 and chunks[i-1].metadata["source"] == chunk.metadata["source"]:
                 self.graph.add_edge(chunks[i-1].node_id, node_id, type="sequence")
             for j in range(i):
@@ -61,8 +62,8 @@ class GraphRAG:
     def query_graph(self, query: str, top_k: int = 3) -> List[Dict]:
         query_embedding = self.embedding_model.embed_query(query)
         from sklearn.metrics.pairwise import cosine_similarity
-        node_scores = [(node, cosine_similarity([query_embedding], [[self.graph.nodes[node]["text"]]])[0][0])
-                       for node in self.graph.nodes()]
+        node_scores = [(node, cosine_similarity([query_embedding], [self.graph.nodes[node]["embedding"]])[0][0])
+                    for node in self.graph.nodes()]
         node_scores.sort(key=lambda x: x[1], reverse=True)
         results = []
         visited = set()
@@ -247,7 +248,7 @@ class HybridRetriever:
         )
         for result in results:
             rerank_score = next((doc.get("rerank_score", 0.0) for doc in reranked_docs 
-                                  if doc["content"] == result["text"]), 0.0)
+                                 if doc["content"] == result["text"]), 0.0)
             result["score_rerank"] = rerank_score
             result["score"] = rerank_score
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -280,9 +281,13 @@ class QdrantStore:
         self.embedding_model = OllamaEmbeddings(model=embedding_model, inference_endpoint=RAG_SETTINGS.EMBEDDING_URL)
         self.embedding_size = 768
     
-    def create_collection(self, collection: Collection, progress_bar: bool = False):
+    def create_collection(self, collection: Collection, progress_bar: bool = False):        
         logger.info(f"📢 Attempting to create collection: {collection.title}")
+        logger.info(f"Documents to upload: {len(collection.documents)}")  # Add this line
+        for doc in collection.documents:
+            logger.info(f"Document: {doc.name}")
         try:
+            collection.title = collection.title.replace(" ", "_")
             collection_info = self.client.get_collection(collection.title)
             if collection_info:
                 logger.info(f"✅ Collection {collection.title} already exists in Qdrant")
@@ -309,7 +314,7 @@ class QdrantStore:
     
     def _upload_documents_to_qdrant(self, documents: List[Document], collection_name: str):
         points = []
-        for doc_idx, doc in enumerate(documents):
+        for doc in documents:
             if doc.name.endswith('.md'):
                 parser = MarkdownParser()
                 chunks = parser.parse_markdown(doc.content, doc.name)
@@ -319,9 +324,9 @@ class QdrantStore:
                     text=text,
                     metadata={"source": doc.name, "topic": str(doc.topic), "chunk_id": i}
                 ) for i, text in enumerate(text_chunks)]
-            for chunk_idx, chunk in enumerate(chunks):
+            for chunk in chunks:
                 embedding = np.array(self.embedding_model.embed_query(chunk.text))
-                point_id = f"{doc_idx}_{chunk_idx}"
+                point_id = str(uuid.uuid4())  # Generar UUID único
                 point = models.PointStruct(
                     id=point_id,
                     vector=embedding.tolist(),
@@ -330,7 +335,7 @@ class QdrantStore:
                 points.append(point)
         batch_size = 100
         for i in range(0, len(points), batch_size):
-            batch = points[i:i+batch_size]
+            batch = points[i:i + batch_size]
             self.client.upsert(collection_name=collection_name, points=batch)
             logger.info(f"Uploaded batch {i//batch_size + 1}/{(len(points)-1)//batch_size + 1} to {collection_name}")
     
