@@ -9,7 +9,9 @@ import spacy
 import qdrant_client.http.exceptions
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
-from sentence_transformers import SentenceTransformer, util
+from src.core.knowledge.embeddings import OllamaEmbeddings, OllamaReranker
+import numpy as np
+
 import numpy as np
 from rank_bm25 import BM25Okapi
 import networkx as nx
@@ -44,8 +46,8 @@ class GraphRAG:
     
     def __init__(self):
         self.graph = nx.DiGraph()
-        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        
+        self.embedding_model = OllamaEmbeddings(model=EMBEDDING_MODEL, inference_endpoint=EMBEDDING_URL)
+            
     def build_graph(self, chunks: List[DocumentChunk]):
         """Build a knowledge graph from document chunks"""
         # Add nodes for each chunk
@@ -76,19 +78,17 @@ class GraphRAG:
         
     def _add_semantic_edges(self, chunks: List[DocumentChunk], threshold: float = 0.7):
         """Add edges based on semantic similarity between chunks"""
-        # Create embeddings for all chunks
         texts = [chunk.text for chunk in chunks]
-        embeddings = self.embedding_model.encode(texts, convert_to_tensor=True)
+        embeddings = self.embedding_model.embed_documents(texts)
+
+        from sklearn.metrics.pairwise import cosine_similarity
+        embeddings_np = np.array(embeddings)
+        cosine_scores = cosine_similarity(embeddings_np)
         
-        # Calculate cosine similarity between all pairs
-        cosine_scores = util.pytorch_cos_sim(embeddings, embeddings)
-        
-        # Add edges for similar chunks
         for i in range(len(chunks)):
             for j in range(i+1, len(chunks)):
-                similarity = cosine_scores[i][j].item()
+                similarity = cosine_scores[i][j]
                 if similarity > threshold:
-                    # Add bidirectional semantic edges
                     self.graph.add_edge(
                         chunks[i].node_id, 
                         chunks[j].node_id, 
@@ -104,19 +104,18 @@ class GraphRAG:
     
     def query_graph(self, query: str, top_k: int = 3) -> List[Dict]:
         """Query the graph for relevant information"""
-        # Get initial nodes based on similarity to query
-        query_embedding = self.embedding_model.encode(query, convert_to_tensor=True)
+        query_embedding = self.embedding_model.embed_query(query)
         
         node_scores = []
         for node in self.graph.nodes():
             node_text = self.graph.nodes[node]["text"]
-            node_embedding = self.embedding_model.encode(node_text, convert_to_tensor=True)
-            similarity = util.pytorch_cos_sim(query_embedding, node_embedding).item()
+            node_embedding = self.embedding_model.embed_query(node_text)
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarity = cosine_similarity([query_embedding], [node_embedding])[0][0]
             node_scores.append((node, similarity))
         
-        # Sort by similarity score
         node_scores.sort(key=lambda x: x[1], reverse=True)
-        
+                
         # Get top k nodes and their neighborhoods
         results = []
         visited_nodes = set()
@@ -160,12 +159,12 @@ class HybridRetriever:
         self.chunks = []
         self.bm25 = None
         self.faiss_index = None
-        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        self.reranker_model = SentenceTransformer(RERANKER_MODEL)
+        self.embedding_model = OllamaEmbeddings(model=EMBEDDING_MODEL, inference_endpoint=EMBEDDING_URL)
+        self.reranker_model = OllamaReranker(model=RERANKER_MODEL, inference_endpoint=EMBEDDING_URL)
         self.nlp = spacy.load("en_core_web_md")
         self.graph_rag = GraphRAG()
         self.corpus_tokenized = []
-        self.dimension = self.embedding_model.get_sentence_embedding_dimension()
+        self.dimension = 768  # Dimension of the embedding model
         
     def add_documents(self, documents: List[Document], use_graph: bool = True):
         """Process and index documents"""
@@ -351,22 +350,26 @@ class HybridRetriever:
         if not results:
             return []
             
-        # Prepare input for reranker
-        pairs = [(query, result["text"]) for result in results]
+        # Extract text from results
+        reranked_docs = self.reranker_model.rerank(
+            query=query,
+            documents=[{"content": result["text"], "metadata": result["metadata"]} for result in results],
+            top_n=top_k
+        )
         
-        # Get reranker scores
-        rerank_scores = self.reranker_model.predict(pairs)
-        
-        # Add reranker scores to results
         for i, result in enumerate(results):
-            result["score_rerank"] = float(rerank_scores[i])
-            # Use reranker score as the final score
+            reranked_idx = next((idx for idx, doc in enumerate(reranked_docs) 
+                                if doc["content"] == result["text"]), None)
+            
+            if reranked_idx is not None:
+                result["score_rerank"] = reranked_docs[reranked_idx].get("rerank_score", 0.0)
+            else:
+                result["score_rerank"] = 0.0
+                
             result["score"] = result["score_rerank"]
         
-        # Sort by reranker score
         results.sort(key=lambda x: x["score"], reverse=True)
         
-        # Return top-k results
         return results[:top_k]
 
 
@@ -422,19 +425,39 @@ class Store:
                 coll = {}
             self._collections: Dict[str: Collection] = coll
 
-        self._encoder = ollama.Client(host=embedding_url).embeddings
-        self._embedding_model: str = embedding_model
-
-        # noinspection PyProtectedMember
+        
+        ###
+        # En src/core/knowledge/store.py, dentro del método __init__
         try:
-            self._embedding_size: int = len(
-                self._encoder(
-                    self._embedding_model,
-                    prompt='init'
-                )['embedding']
-            )
-        except (httpx.ConnectError, ollama._types.ResponseError) as err:
-            raise ProviderError("Can't load embedding model") from err
+            self._encoder = ollama.Client(host=embedding_url).embeddings
+            self._embedding_model: str = embedding_model
+
+            # noinspection PyProtectedMember
+            try:
+                self._embedding_size: int = len(
+                    self._encoder(
+                        self._embedding_model,
+                        prompt='init'
+                    )['embedding']
+                )
+            except (httpx.ConnectError, ollama._types.ResponseError) as err:
+                # Si no podemos conectarnos a Ollama, usar un valor predeterminado
+                self._embedding_size = 768  # Dimensión predeterminada para nomic-embed-text
+                from src.utils import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"No se pudo conectar a Ollama: {err}. Usando modo limitado.")
+        except Exception as e:
+            from src.utils import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Error inicializando embeddings: {e}")
+            # Configuración de respaldo
+            self._embedding_size = 768
+            # Crear una función mock para _encoder
+            def mock_encoder(model, prompt):
+                # Devolver un embedding simulado
+                import numpy as np
+                return {"embedding": np.zeros(self._embedding_size).tolist()}
+            self._encoder = mock_encoder
 
     def create_collection(
         self,
@@ -658,19 +681,12 @@ class QdrantStore:
     
     def __init__(
         self,
-        qdrant_url: str = "http://localhost:6333",
-        qdrant_api_key: str = None,
-        embedding_model: str = "nomic-embed-text",
+        qdrant_url: str = RAG_SETTINGS.RAG_URL,
+        qdrant_api_key: str = RAG_SETTINGS.RAG_API_KEY,
+        embedding_model: str = RAG_SETTINGS.EMBEDDING_MODEL,
         use_hybrid: bool = True
     ):
-        """Initialize the Qdrant-based knowledge store
-        
-        :param qdrant_url: URL of the Qdrant server
-        :param qdrant_api_key: API key for Qdrant Cloud (if used)
-        :param embedding_model: Model to use for embeddings
-        :param use_hybrid: Whether to use hybrid retrieval
-        """
-        # Initialize Qdrant client
+        """Initialize the Qdrant-based knowledge store"""
         self.client = QdrantClient(
             url=qdrant_url,
             api_key=qdrant_api_key
@@ -680,8 +696,8 @@ class QdrantStore:
         self.hybrid_retriever = HybridRetriever() if use_hybrid else None
         self.collections_indexed = set()
         self.embedding_model_name = embedding_model
-        self.embedding_model = SentenceTransformer(embedding_model)
-        self.embedding_size = self.embedding_model.get_sentence_embedding_dimension()
+        self.embedding_model = OllamaEmbeddings(model=embedding_model, inference_endpoint=EMBEDDING_URL)
+        self.embedding_size = 768
 
     def create_collection(self, collection: Collection, progress_bar: bool = False):
         """Create a new collection in Qdrant and index it with the hybrid retriever"""
@@ -783,7 +799,8 @@ class QdrantStore:
             # Create points for Qdrant
             for chunk_idx, chunk in enumerate(chunks):
                 # Create embedding
-                embedding = self.embedding_model.encode(chunk.text)
+                embedding = np.array(self.embedding_model.embed_query(chunk.text))
+
                 
                 # Create point
                 point_id = f"{doc_idx}_{chunk_idx}"
@@ -862,7 +879,7 @@ class QdrantStore:
     def _qdrant_search(self, query: str, collection_name: str, limit: int, threshold: float) -> list[str] | None:
         """Search using Qdrant's vector similarity search"""
         # Encode query
-        query_embedding = self.embedding_model.encode(query).tolist()
+        query_embedding = self.embedding_model.embed_query(query)
         
         # Search in Qdrant
         search_results = self.client.search(

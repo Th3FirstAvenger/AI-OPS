@@ -12,6 +12,9 @@ API Interface for AI-OPS, includes Sessions routes and Collections routes:
 """
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
+from src.routers.retrieve import retrieve_router
+
+
 
 from src.config import API_SETTINGS
 from src.routers import session_router
@@ -25,6 +28,9 @@ app = FastAPI()
 app.include_router(session_router)
 # app.include_router(rag_router, prefix="/api/v1")
 app.include_router(rag_router)
+app.include_router(retrieve_router)
+
+
 
 # TODO: implement proper CORS
 app.add_middleware(
@@ -35,7 +41,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# En src/api.py
+@app.get('/debug/routes')
+async def debug_routes():
+    """List all registered routes for debugging"""
+    routes = []
+    for route in app.routes:
+        routes.append({
+            "path": route.path,
+            "name": route.name,
+            "methods": route.methods
+        })
+    return {"routes": routes}
 
 if API_SETTINGS.PROFILE:
     try:

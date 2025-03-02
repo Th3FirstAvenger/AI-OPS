@@ -98,9 +98,10 @@ class AgentClient:
             # RAG is disabled in the current version
             'list_collections': self.__list_collections,
             'create_collection': self.__create_collection,
+            'retrieve': self.retrieve,
 
             # Add new command to toggle thinking
-            'toggle thinking': self.toggle_thinking,
+            'toggle_thinking': self.toggle_thinking,
         }
 
         self.console.print("[bold blue]ai-ops-cli[/] (beta) starting.")
@@ -167,7 +168,7 @@ class AgentClient:
             except Exception as e:
                 self.console.print(f'[red]Error: {e}[/]')
                 continue
-
+    
     def find_closest_command(self, input_text):
         """Find the closest matching command for a given input"""
         # Exact match first
@@ -313,6 +314,120 @@ class AgentClient:
             self.console.print(f'[bold white]{msg["role"]}[/]: {msg["content"]}\n')
         self.chat(print_name=False)
 
+    def retrieve(self):
+        """Retrieve documents from a collection using RAG"""
+        # Obtener la lista de colecciones disponibles
+        try:
+            response = self.client.get(f'{self.api_url}/collections/list')
+            response.raise_for_status()
+            available_collections = response.json()
+            
+            if not available_collections:
+                self.console.print("[bold red]Error:[/bold red] No collections available.")
+                return
+            
+            collection_names = [coll.get('title', '') for coll in available_collections]
+        except Exception as e:
+            self.console.print(f"[bold red]Error getting collections:[/bold red] {str(e)}")
+            collection_names = []
+
+        # Permitir al usuario elegir una colección
+        collection_name = ""
+        if collection_names:
+            self.console.print("[bold blue]Available collections:[/bold blue]")
+            for i, name in enumerate(collection_names):
+                self.console.print(f"{i+1}. {name}")
+            
+            selection = Prompt.ask(
+                'Select collection (number or name)',
+                console=self.console
+            )
+            
+            # Interpretar la selección
+            if selection.isdigit() and 1 <= int(selection) <= len(collection_names):
+                collection_name = collection_names[int(selection) - 1]
+            elif selection in collection_names:
+                collection_name = selection
+            else:
+                self.console.print(f"[bold red]Invalid selection.[/bold red] Using collection name: {selection}")
+                collection_name = selection
+        else:
+            collection_name = Prompt.ask(
+                'Collection name',
+                console=self.console
+            )
+
+        # Obtener la consulta
+        query = Prompt.ask(
+            'Query',
+            console=self.console
+        )
+
+        # Obtener el límite
+        limit_str = Prompt.ask(
+            'Number of results (default: 5)',
+            console=self.console,
+            default="5"
+        )
+
+        try:
+            limit = int(limit_str)
+        except ValueError:
+            self.console.print("[bold yellow]Warning:[/bold yellow] Invalid limit value. Using default (5).")
+            limit = 5
+
+        # Obtener el umbral
+        threshold_str = Prompt.ask(
+            'Similarity threshold (0.0-1.0, default: 0.5)',
+            console=self.console,
+            default="0.5"
+        )
+
+        try:
+            threshold = float(threshold_str)
+            if not (0 <= threshold <= 1):
+                raise ValueError("Threshold must be between 0 and 1")
+        except ValueError:
+            self.console.print("[bold yellow]Warning:[/bold yellow] Invalid threshold value. Using default (0.5).")
+            threshold = 0.5
+
+        # Realizar la consulta
+        try:
+            response = self.client.get(
+                f'{self.api_url}/retrieve',
+                params={
+                    'query': query,
+                    'collection': collection_name,
+                    'limit': limit,
+                    'threshold': threshold
+                }
+            )
+            response.raise_for_status()
+            results = response.json()
+            
+            if not results:
+                self.console.print("\n[bold red]No relevant documents found.[/bold red]")
+                return
+            
+            self.console.print("\n[bold blue]Results:[/bold blue]")
+            for idx, result in enumerate(results):
+                self.console.print(f"\n[bold green]Result {idx+1}:[/bold green]")
+                self.console.print(result)
+                self.console.print("\n" + "-" * 80)
+                
+        except Exception as e:
+            self.console.print(f"[bold red]Error:[/bold red] {str(e)}")
+            try:
+                collections_response = self.client.get(f'{self.api_url}/collections/list')
+                collections_response.raise_for_status()
+                collections = collections_response.json()
+                
+                self.console.print("\n[bold yellow]Available collections (from API):[/bold yellow]")
+                for idx, coll in enumerate(collections):
+                    self.console.print(f"{idx+1}. {coll.get('title', '')}")
+            except Exception:
+                # Si falla, ignorar
+                pass
         
     def chat(self, print_name=True):
         """Opens a chat with the Agent"""
@@ -422,31 +537,43 @@ class AgentClient:
         except Exception as e:
             self.console.print(f'[red]Error: {e}[/]')
         
-    # RAG is disabled in the current version
     def __list_collections(self):
         """Know what collections are available"""
-        response = self.client.get(
-            f'{self.api_url}/collections/list/'
-        )
-        response.raise_for_status()
-        body = response.json()
-        if len(body) == 0:
-            self.console.print('[+] No collections found')
-        else:
-            tree = Tree("[+] Available Collections:")
-            for collection in body:
-                c_doc = f"[bold blue]{collection['title']}[/]\n"
+        try:
+            response = self.client.get(
+                f'{self.api_url}/collections/list'
+            )
+            response.raise_for_status()
+            body = response.json()
+            if len(body) == 0:
+                self.console.print('[+] No collections found')
+            else:
+                tree = Tree("[+] Available Collections:")
+                for collection in body:
+                    c_doc = f"[bold blue]{collection['title']}[/]\n"
 
-                str_topics = ', '.join(collection['topics'])
-                c_doc += f"[bold white]Topics[/]: {str_topics}\n"
+                    str_topics = ', '.join(collection['topics'])
+                    c_doc += f"[bold white]Topics[/]: {str_topics}\n"
 
-                c_doc += "[bold white]Documents[/]:\n"
-                for document in collection['documents']:
-                    c_doc += f"- {document['name']}\n"
+                    c_doc += "[bold white]Documents[/]:\n"
+                    for document in collection['documents']:
+                        c_doc += f"- {document['name']}\n"
 
-                tree.add(c_doc)
+                    tree.add(c_doc)
 
-            self.console.print(tree)
+                self.console.print(tree)
+  
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                self.console.print('[red]Error: Collections endpoint not found. URL might be incorrect.[/]')
+                self.console.print(f'[yellow]Tried URL: {self.api_url}/collections/list[/]')
+                self.console.print('[yellow]Check your API configuration and make sure rag_router is included.[/]')
+            else:
+                self.console.print(f'[red]HTTP Error: {e}[/]')
+            return
+        except Exception as e:
+            self.console.print(f'[red]Error: {e}[/]')
+            return
 
     def __create_collection(self):
         """Upload a collection to RAG"""
@@ -511,7 +638,7 @@ class AgentClient:
         self.console.print("\n[bold white]Agent Related[/]")
         self.console.print("- [bold blue]chat[/]   : Open chat with the agent.")
         self.console.print("- [bold blue]back[/]   : Exit chat")
-        self.console.print("- [bold blue]toggle thinking[/] : Toggle thinking mode")
+        self.console.print("- [bold blue]toggle_thinking[/] : Toggle thinking mode")
 
         # Session Related
         self.console.print("\n[bold white]Session Related[/]")

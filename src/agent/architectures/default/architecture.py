@@ -96,7 +96,7 @@ class DefaultArchitecture(AgentArchitecture):
         }
         # Initialize the HybridRetriever for context retrieval not implemented yet
         # TODO: Implement HybridRetriever
-        # self.hybrid_retriever = HybridRetriever()
+        self.hybrid_retriever = HybridRetriever()
         self.hybrid_retriever = None
 
         self.__thought_parser: State = State()
@@ -122,7 +122,6 @@ class DefaultArchitecture(AgentArchitecture):
 
         self.token_logger.setLevel(logging.DEBUG)
         self.token_logger.addHandler(logger_handler)
-
 
     def query(
         self,
@@ -169,12 +168,12 @@ class DefaultArchitecture(AgentArchitecture):
         )
 
         # TODO: Implement HybridRetriever
-        """retrieved_results = self.hybrid_retriever.retrieve(query=user_input, top_k=5, use_graph=True)
+        retrieved_results = self.hybrid_retriever.retrieve(query=user_input, top_k=5, use_graph=True)
         context = "\n".join([result["text"] for result in retrieved_results])
 
         augmented_input = f"Contexto recuperado:\n{context}\n\nConsulta:\n{user_input_with_tool_call}"
         conversation.messages[-1].content = augmented_input
-        logger.debug(f"Augmented Input: {augmented_input}")"""
+        logger.debug(f"Augmented Input: {augmented_input}")
 
         response = ''
         response_tokens = 0

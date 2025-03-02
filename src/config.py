@@ -10,7 +10,7 @@ class AgentSettings(BaseSettings):
     ENDPOINT: str = os.environ.get('ENDPOINT', 'http://localhost:11434')
     PROVIDER: str = os.environ.get('PROVIDER', 'ollama')
     PROVIDER_KEY: str = os.environ.get('PROVIDER_KEY', '')
-    USE_RAG: bool = os.environ.get('USE_RAG', False)
+    USE_RAG: bool = os.environ.get('USE_RAG', 'True').lower() == 'true'  
 
 
 class RAGSettings(BaseSettings):
@@ -23,7 +23,7 @@ class RAGSettings(BaseSettings):
     # Keep these for backward compatibility
     EMBEDDING_URL: str = os.environ.get('EMBEDDING_URL', 'http://localhost:11434')
     IN_MEMORY: bool = os.environ.get('IN_MEMORY', 'False') == 'True'
-    RERANKER_MODEL: str = os.environ.get('RERANKER_MODEL', 'bge-reranker-large')
+    RERANKER_MODEL: str = os.environ.get('RERANKER_MODEL', 'qllama/bge-reranker-large')
 
     DEFAULT_CHUNK_SIZE: ClassVar[int] = int(os.environ.get('DEFAULT_CHUNK_SIZE', 512))
     DEFAULT_CHUNK_OVERLAP: ClassVar[int] = int(os.environ.get('DEFAULT_CHUNK_OVERLAP', 128))
