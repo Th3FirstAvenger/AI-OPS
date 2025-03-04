@@ -20,8 +20,7 @@ rag_router = APIRouter()
 @lru_cache()
 def get_rag_store() -> Store:
     """
-    Singleton factory para crear y reutilizar la instancia de Store.
-    El decorador lru_cache asegura que la función solo se ejecute una vez.
+    Singleton factory function to get the RAG store.
     """
     try:
         logger.info("Initializing RAG store...")

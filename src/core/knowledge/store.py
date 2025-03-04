@@ -22,6 +22,7 @@ import uuid
 logger = get_logger(__name__)
 nlp = spacy.load("en_core_web_md")
 
+
 # --- GraphRAG ---
 class GraphRAG:
     """Graph-based RAG that builds and queries a knowledge graph from document chunks"""
@@ -111,14 +112,18 @@ class HybridRetriever:
         self.dimension = 768
     
     def add_documents(self, documents: List[Document], use_graph: bool = True):
+        """Process and index documents"""
         chunks = []
         for doc in documents:
+            # Check if it's a markdown document
             if doc.name.endswith('.md'):
-                parser = MarkdownParser()
-                md_chunks = parser.parse_markdown(doc.content, doc.name)
+                markdown_parser = MarkdownParser()
+                md_chunks = markdown_parser.parse_markdown(doc.content, doc.name)
                 chunks.extend(md_chunks)
             else:
-                for i, text in enumerate(chunk(doc)):
+                # Use existing chunking for non-markdown documents
+                text_chunks = chunk(doc)
+                for i, text in enumerate(text_chunks):
                     chunks.append(DocumentChunk(
                         text=text,
                         metadata={
@@ -127,12 +132,26 @@ class HybridRetriever:
                             "chunk_id": i
                         }
                     ))
+        
+        # Append to existing chunks
+        if len(self.chunks) > 0:
+            chunks = self.chunks + chunks
+        
         self.chunks = chunks
+        
+        # Always recreate indices when adding documents
+        logger.info(f"Creating BM25 index with {len(chunks)} chunks")
         self._create_bm25_index()
+        
+        logger.info(f"Creating FAISS index with {len(chunks)} chunks")
         self._create_faiss_index()
+        
         if use_graph:
+            logger.info(f"Building knowledge graph with {len(chunks)} chunks")
             self.graph_rag.build_graph(chunks)
-    
+            
+        logger.info(f"Finished indexing {len(chunks)} chunks")
+        
     def _create_bm25_index(self):
         if not self.chunks:
             logger.warning("No documents to index for BM25.")
@@ -261,6 +280,17 @@ class HybridRetriever:
         combined_results = self._combine_results(bm25_results, faiss_results, graph_results)
         reranked_results = self._rerank_results(query, combined_results, top_k=RAG_SETTINGS.DEFAULT_RERANK_TOP_K)
         return reranked_results
+    
+    def check_indices(self):
+        """Check if indices are properly initialized and return status"""
+        status = {
+            "chunks_count": len(self.chunks),
+            "bm25_initialized": self.bm25 is not None,
+            "faiss_initialized": self.faiss_index is not None,
+            "graph_nodes": len(self.graph_rag.graph.nodes) if hasattr(self.graph_rag, 'graph') else 0
+        }
+        
+        return status
 
 # --- QdrantStore ---
 class QdrantStore:
@@ -281,19 +311,24 @@ class QdrantStore:
         self.embedding_model = OllamaEmbeddings(model=embedding_model, inference_endpoint=RAG_SETTINGS.EMBEDDING_URL)
         self.embedding_size = 768
     
-    def create_collection(self, collection: Collection, progress_bar: bool = False):        
+    def create_collection(self, collection: Collection, progress_bar: bool = False):
         logger.info(f"📢 Attempting to create collection: {collection.title}")
-        logger.info(f"Documents to upload: {len(collection.documents)}")  # Add this line
-        for doc in collection.documents:
-            logger.info(f"Document: {doc.name}")
         try:
             collection.title = collection.title.replace(" ", "_")
             collection_info = self.client.get_collection(collection.title)
             if collection_info:
                 logger.info(f"✅ Collection {collection.title} already exists in Qdrant")
+                
+                # Even if collection exists, add to hybrid retriever
+                if self.hybrid_retriever and collection.documents:
+                    self.hybrid_retriever.add_documents(collection.documents, use_graph=True)
+                    self.collections_indexed.add(collection.title)
+                    logger.info(f"✅ Indexed existing collection {collection.title} in hybrid retriever")
+                
                 return
         except Exception as e:
             logger.warning(f"⚠️ Collection {collection.title} does not exist. Proceeding. Error: {e}")
+        
         try:
             self.client.create_collection(
                 collection_name=collection.title,
@@ -303,14 +338,21 @@ class QdrantStore:
         except Exception as e:
             logger.error(f"❌ Error creating collection {collection.title}: {e}")
             return
+        
         self.collections[collection.title] = collection
+        
         if collection.documents:
             logger.info(f"📢 Uploading {len(collection.documents)} documents to {collection.title}")
+            # Upload to Qdrant
             self._upload_documents_to_qdrant(collection.documents, collection.title)
+            
+            # Also index with hybrid retriever
             if self.hybrid_retriever:
+                logger.info(f"📢 Adding documents to HybridRetriever with graph construction")
                 self.hybrid_retriever.add_documents(collection.documents, use_graph=True)
                 self.collections_indexed.add(collection.title)
                 logger.info(f"✅ Indexed collection {collection.title} in hybrid retriever")
+
     
     def _upload_documents_to_qdrant(self, documents: List[Document], collection_name: str):
         points = []
@@ -420,3 +462,6 @@ class QdrantStore:
             collections.append(collection)
             i += 1
         return collections
+    
+
+rag_store = QdrantStore()
