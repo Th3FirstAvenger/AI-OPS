@@ -1,6 +1,7 @@
 benchmarks/rag/*
 test/strategies/*
 logs/
+*.code-workspace
 
 # IDEs
 .idea/
