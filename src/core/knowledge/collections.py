@@ -1,9 +1,8 @@
-"""RAG related data"""
+"""RAG related data models with enhanced topic support"""
 import json
 import os
-from dataclasses import dataclass
-from typing import List, Optional
-
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any, Set
 
 @dataclass
 class Topic:
@@ -32,11 +31,53 @@ class Document:
     be chunked and added to a Vector Database"""
     name: str
     content: str
-    topic: Optional[Topic]
+    topics: List[Topic] = field(default_factory=list)
+    source_type: str = "text"  # "markdown", "text", etc.
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __str__(self):
-        return f'{self.name} [{str(self.topic)}]\n{self.content}'
+        topics_str = ", ".join([str(topic) for topic in self.topics])
+        return f'{self.name} [{topics_str}]\n{self.content}'
+    
+    @staticmethod
+    def from_markdown(filename: str, content: str, topics: List[str]) -> 'Document':
+        """Create document from markdown content with frontmatter parsing"""
+        # Extract metadata from frontmatter if present
+        metadata, cleaned_content = process_frontmatter(content)
+        
+        return Document(
+            name=filename,
+            content=cleaned_content,
+            topics=[Topic(t) for t in topics],
+            source_type="markdown",
+            metadata=metadata
+        )
 
+def process_frontmatter(content: str) -> tuple[Dict[str, Any], str]:
+    """Extract YAML frontmatter from markdown content if present"""
+    metadata = {}
+    cleaned_content = content
+    
+    # Check if content has frontmatter (starts with ---)
+    if content.startswith('---'):
+        try:
+            # Find the end of the frontmatter
+            end_index = content.find('---', 3)
+            if end_index != -1:
+                frontmatter = content[3:end_index].strip()
+                # Parse the frontmatter (simple key-value parsing)
+                for line in frontmatter.split('\n'):
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        metadata[key.strip()] = value.strip()
+                
+                # Remove frontmatter from content
+                cleaned_content = content[end_index + 3:].strip()
+        except Exception:
+            # If parsing fails, return the original content
+            pass
+            
+    return metadata, cleaned_content
 
 @dataclass
 class Collection:
@@ -89,71 +130,66 @@ class Collection:
         if False in valid_dict:
             raise ValueError(format_err_msg + "Found not dict item.")
 
-        all_keys = [list(item.keys()) for item in data]
-        valid_keys = [
-            'title' in keys and 'content' in keys and 'category' in keys
-            for keys in all_keys
-        ]
-        if False in valid_keys:
-            raise ValueError(format_err_msg + "Not found required keys.")
-
         documents: list[Document] = []
         all_topics: list[Topic] = []
+        
         for item in data:
+            # Validate minimal required fields
+            if 'title' not in item or 'content' not in item:
+                raise ValueError(format_err_msg + "Missing required fields.")
+                
             title = item['title']
             content = item['content']
-            category = item['category']
-            if isinstance(category, list):
-                topics = [Topic(topic) for topic in category]
-                all_topics.extend([Topic(topic) for topic in category])
+            
+            # Handle both "category" and "topics" for backward compatibility
+            topics_data = item.get('topics', item.get('category', []))
+            
+            # Extract metadata if present
+            metadata = {k: v for k, v in item.items() 
+                       if k not in ['title', 'content', 'topics', 'category']}
+                       
+            # Handle different topic formats
+            if isinstance(topics_data, list):
+                topics = [Topic(topic) for topic in topics_data]
+                all_topics.extend(topics)
             else:
-                topics = Topic(category)
-                all_topics.append(Topic(category))
+                topics = [Topic(topics_data)]
+                all_topics.append(Topic(topics_data))
 
             documents.append(Document(
                 name=title,
                 content=content,
-                topic=topics
+                topics=topics,
+                metadata=metadata,
+                source_type=item.get('source_type', 'text')
             ))
 
         return Collection(
             collection_id=-1,
             title=collection_title,
             documents=documents,
-            topics=all_topics,
+            topics=list(set(all_topics)),
             size=len(documents)
         )
 
     def to_json_metadata(self, path: str):
-        """Saves the collection to the specified metadata file.
-        ex. USER/.aiops/knowledge/collection_name.json
-        {
-            'id'
-            'title'
-            'documents': [
-                {'name', 'topic'}
-                ...
-            ]
-            'topics': [...]
-        }"""
-        print(f'[+] Saving {self.title} to {path}')
-        print(self)
+        """Saves the collection to the specified metadata file."""
         collection_metadata = self.to_dict()
 
         with open(path, 'w+', encoding='utf-8') as fp:
-            json.dump(collection_metadata, fp)
+            json.dump(collection_metadata, fp, indent=2)
 
     def to_dict(self):
         """Convert collection to dictionary (strips out content)"""
         docs = []
-        if len(self.documents) > 0:
-            for document in self.documents:
-                print(document.topic, type(document.topic))
-                docs.append({
-                    'name': document.name,
-                    'content': '',  # document.content,
-                    'topic': document.topic.name
-                })
+        for document in self.documents:
+            docs.append({
+                'name': document.name,
+                'content': '',  # Strip content to save space
+                'topics': [topic.name for topic in document.topics],
+                'source_type': document.source_type,
+                'metadata': document.metadata
+            })
 
         collection_metadata = {
             'id': self.collection_id,
@@ -167,17 +203,26 @@ class Collection:
         """The document names are used to filter queries to the
         Knowledge Database"""
         return [doc.name for doc in self.documents]
+        
+    def get_topics(self) -> Set[Topic]:
+        """Returns all unique topics in this collection"""
+        topics = set()
+        for doc in self.documents:
+            for topic in doc.topics:
+                topics.add(topic)
+        return topics
+        
+    def get_documents_by_topic(self, topic_name: str) -> List[Document]:
+        """Returns all documents with the specified topic"""
+        return [doc for doc in self.documents 
+                if any(t.name.lower() == topic_name.lower() for t in doc.topics)]
 
     def __str__(self):
         docs = "| - Documents\n"
         for doc in self.documents:
-            docs += f'    | - {doc.name}\n'
+            topic_names = ", ".join([t.name for t in doc.topics])
+            docs += f'    | - {doc.name} [{topic_names}]\n'
         topics = ", ".join([topic.name for topic in set(self.topics)])
         return (f'Title: {self.title} \nID: {self.collection_id})\n'
                 f'| - Topics: {topics}\n'
                 f'{docs}')
-
-
-if __name__ == "__main__":
-    c = Collection.from_json('../../../data/json/owasp.json')
-    print(c)

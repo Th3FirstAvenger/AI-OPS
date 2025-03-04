@@ -1,100 +1,210 @@
-"""
-Work In Progress, not mounted in API routes.
-"""
-import json
-from typing import Optional
+"""RAG Router for document management and collection operations"""
+import logging
+from typing import List, Optional
+from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Depends
+from pathlib import Path
+import tempfile
 
-from fastapi import APIRouter, File, Form, UploadFile
+from src.core.knowledge import DocumentProcessor, MaintenanceUtils
+from src.dependencies import get_store
 
-from src.core.knowledge import Collection, Store
+logger = logging.getLogger(__name__)
 
-rag_router = APIRouter()
-# temporarily make store variable
-store: Store | None = None
+rag_router = APIRouter(
+    prefix="/collections",
+    tags=["collections"],
+    responses={404: {"description": "Not found"}}
+)
 
-
-@rag_router.get('/collections/list')
-def list_collections():
+@rag_router.get("/list")
+async def list_collections(store = Depends(get_store)):
     """
-    Returns available Collections.
-    Returns a JSON list of available Collections.
+    List all available collections in the knowledge base.
+    
+    Returns:
+        List of collection metadata
     """
-    if store:
-        available_collections = [c.to_dict() for c in store.collections.values()]
-        return available_collections
-    else:
-        return {}
+    try:
+        if not store:
+            return {"error": "RAG is not available"}
+        
+        collections = []
+        for name, collection in store.collections.items():
+            collections.append({
+                "title": name,
+                "topics": list(set([topic.name for topic in collection.topics])),
+                "documents": [{"name": doc.name} for doc in collection.documents],
+                "size": collection.size
+            })
+        
+        return collections
+    except Exception as e:
+        logger.error(f"Error listing collections: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+@rag_router.get("/{collection_name}")
+async def get_collection(collection_name: str, store = Depends(get_store)):
+    """
+    Get detailed information about a specific collection.
+    
+    Args:
+        collection_name: Name of the collection
+        
+    Returns:
+        Collection details
+    """
+    try:
+        if not store:
+            return {"error": "RAG is not available"}
+            
+        collection = store.get_collection(collection_name)
+        if not collection:
+            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+            
+        # Get integrity report
+        integrity = MaintenanceUtils.verify_collection_integrity(store, collection_name)
+            
+        return {
+            "title": collection.title,
+            "topics": list(set([topic.name for topic in collection.topics])),
+            "documents": [{"name": doc.name, "topics": [t.name for t in doc.topics]} for doc in collection.documents],
+            "size": collection.size,
+            "integrity": integrity
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting collection '{collection_name}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@rag_router.post('/collections/new')
+@rag_router.post("/new")
 async def create_collection(
-        title: str = Form(...),
-        file: Optional[UploadFile] = File(None)
+    title: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    store = Depends(get_store)
 ):
     """
-    Creates a new Collection.
-    :param file: uploaded file
-    :param title: unique collection title
-
-    Returns error message for any validation error.
-    1. title should be unique
-    2. the file should follow this format:
-    [
-        {
-            "title": "collection title",
-            "content": "...",
-            "category": "document topic"
-        },
-        ...
-    ]
-
-    (TODO) Returns a stream to notify progress if input is valid.
-    (TODO)
-      when a new collection is uploaded the search_rag tool
-      should be re-registered and the agent should be updated
+    Create a new collection.
+    
+    Args:
+        title: Collection title
+        file: Optional file containing collection data
+        
+    Returns:
+        Success or error message
     """
     if not store:
-        return {'error': "RAG is not available"}
-    if title in list(store.collections.keys()):
-        return {'error': f'A collection named "{title}" already exists.'}
-
-    if not file:
-        available_collections = list(store.collections.values())
-        last_id = available_collections[-1].collection_id \
-            if available_collections \
-            else 0
-        store.create_collection(
-            Collection(
-                collection_id=last_id + 1,
-                title=title,
-                documents=[],
-                topics=[]
-            )
+        return {"error": "RAG is not available"}
+        
+    if title in store.collections:
+        return {"error": f"Collection '{title}' already exists"}
+        
+    try:
+        # Logic for creating collection from file or empty collection
+        from src.core.knowledge import Collection
+        collection = Collection(
+            collection_id=1,  # Will be overridden by the store
+            title=title,
+            documents=[],
+            topics=[]
         )
-    else:
-        if not file.filename.endswith('.json'):
-            return {'error': 'Invalid file'}
+        store.create_collection(collection)
+        return {"success": f"Collection '{title}' created successfully"}
+    except Exception as e:
+        logger.error(f"Error creating collection '{title}': {e}")
+        return {"error": str(e)}
 
-        contents = await file.read()
+@rag_router.post("/{collection_name}/upload")
+async def upload_document(
+    collection_name: str,
+    file: UploadFile = File(...),
+    topics: str = Form(None),
+    store = Depends(get_store)
+):
+    """
+    Upload a document to a collection.
+    
+    Args:
+        collection_name: Name of the collection
+        file: Document file
+        topics: Optional comma-separated list of topics
+        
+    Returns:
+        Success or error message
+    """
+    if not store:
+        return {"error": "RAG is not available"}
+        
+    if collection_name not in store.collections:
+        return {"error": f"Collection '{collection_name}' does not exist"}
+        
+    # Process topics
+    topic_list = topics.split(',') if topics and topics.strip() else []
+    
+    # Create temporary file
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix)
+    temp_path = temp_file.name
+    
+    try:
+        # Write uploaded file to temp file
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
+        
+        # Process document
+        document = DocumentProcessor.from_file(temp_path, topic_list)
+        
+        # Upload to collection
+        store.upload(document, collection_name)
+        
+        return {
+            "success": True,
+            "message": f"Document '{file.filename}' uploaded with topics: {', '.join(topic_list)}"
+        }
+    except Exception as e:
+        logger.error(f"Error uploading document to '{collection_name}': {e}")
+        return {"error": str(e)}
+    finally:
+        # Clean up temp file
         try:
-            collection_data: list[dict] = json.loads(contents.decode('utf-8'))
-        except (json.decoder.JSONDecodeError, UnicodeDecodeError):
-            return {'error': 'Invalid file'}
+            Path(temp_path).unlink()
+        except:
+            pass
 
-        try:
-            new_collection = Collection.from_dict(title, collection_data)
-        except ValueError as schema_err:
-            return {'error': schema_err}
-
-        try:
-            store.create_collection(new_collection)
-        except RuntimeError as create_err:
-            return {'error': create_err}
-
-    return {'success': f'{title} created successfully.'}
-
-
-@rag_router.post('/collections/upload')
-async def upload_document():
-    """Uploads a document to an existing collection."""
-    # TODO: file vs ?
+@rag_router.post("/{collection_name}/maintenance")
+async def maintain_collection(
+    collection_name: str,
+    operation: str = Form(...),
+    store = Depends(get_store)
+):
+    """
+    Perform maintenance operations on a collection.
+    
+    Args:
+        collection_name: Name of the collection
+        operation: Maintenance operation to perform
+        
+    Returns:
+        Success or error message
+    """
+    if not store:
+        return {"error": "RAG is not available"}
+        
+    if collection_name not in store.collections:
+        return {"error": f"Collection '{collection_name}' does not exist"}
+        
+    try:
+        if operation == "rebuild_bm25":
+            success = MaintenanceUtils.rebuild_bm25_index(store, collection_name)
+            if success:
+                return {"success": f"BM25 index rebuilt for collection '{collection_name}'"}
+            else:
+                return {"error": "Failed to rebuild BM25 index"}
+        elif operation == "verify":
+            report = MaintenanceUtils.verify_collection_integrity(store, collection_name)
+            return {"report": report}
+        else:
+            return {"error": f"Unknown operation: {operation}"}
+    except Exception as e:
+        logger.error(f"Error performing maintenance on '{collection_name}': {e}")
+        return {"error": str(e)}

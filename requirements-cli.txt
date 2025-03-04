@@ -2,3 +2,20 @@ rich~=13.7.1
 prompt_toolkit
 requests~=2.32.3
 pydantic
+
+# Core requirements
+fastapi~=0.111.0
+ollama~=0.3.1
+qdrant-client~=1.9.0
+spacy~=3.7.5
+uvicorn
+python-dotenv~=1.0.1
+requests~=2.32.3
+
+# Knowledge and RAG components
+sentence-transformers>=2.2.2  # For Hugging Face reranker
+numpy>=1.26.0  # For vector operations in reranking
+
+# BM25 support
+rank-bm25>=0.2.2  # For BM25 indexing
+nltk>=3.8.1  # For tokenization in BM25

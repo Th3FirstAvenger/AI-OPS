@@ -1,29 +1,20 @@
-"""
-API Interface for AI-OPS, includes Sessions routes and Collections routes:
-
-- **Sessions**: Agent related operations including chat and conversation management.
-
-- **Collections**: RAG related operations (...)
-
-### RAG Routes
-- /collections/list    : Returns available Collections.
-- /collections/new     : Creates a new Collection.
-- /collections/upload/ : Upload document to an existing Collection
-"""
+"""API Interface for AI-OPS"""
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import API_SETTINGS
-from src.routers import session_router
+from src.routers import session_router, rag_router
 from src.utils import get_logger
+from src.routers import session_router, rag_router
 
 logger = get_logger(__name__)
 
-# --- Initialize API
+# Initialize API
 app = FastAPI()
 app.include_router(session_router)
+app.include_router(rag_router)  # Add the RAG router
 
-# TODO: implement proper CORS
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=API_SETTINGS.ORIGINS,
@@ -32,6 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Monitoring if enabled
 if API_SETTINGS.PROFILE:
     try:
         from src.routers.monitoring import monitor_router
@@ -39,9 +31,7 @@ if API_SETTINGS.PROFILE:
     except RuntimeError as monitor_startup_err:
         logger.error("Monitoring disabled: ", str(monitor_startup_err))
 
-
 @app.get('/ping')
 def ping():
     """Used to check if API is on"""
     return status.HTTP_200_OK
-

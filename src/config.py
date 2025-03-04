@@ -11,14 +11,18 @@ class AgentSettings(BaseSettings):
     PROVIDER_KEY: str = os.environ.get('PROVIDER_KEY', '')
     USE_RAG: bool = os.environ.get('USE_RAG', False)
 
-
 class RAGSettings(BaseSettings):
     """Settings for Qdrant vector database"""
     RAG_URL: str = os.environ.get('RAG_URL', 'http://localhost:6333')
     IN_MEMORY: bool = os.environ.get('IN_MEMORY', True)
     EMBEDDING_MODEL: str = os.environ.get('EMBEDDING_MODEL', 'nomic-embed-text')
-    # There the assumption that embedding url is the same of llm provider
     EMBEDDING_URL: str = os.environ.get('ENDPOINT', 'http://localhost:11434')
+    
+    # Reranker settings
+    USE_RERANKER: bool = os.environ.get('USE_RERANKER', True) 
+    RERANKER_PROVIDER: str = os.environ.get('RERANKER_PROVIDER', 'ollama')
+    RERANKER_MODEL: str = os.environ.get('RERANKER_MODEL', 'qllama/bge-reranker-large')  # Empty for default
+    RERANKER_CONFIDENCE: float = float(os.environ.get('RERANKER_CONFIDENCE', '0.0'))
 
 
 class APISettings(BaseSettings):
