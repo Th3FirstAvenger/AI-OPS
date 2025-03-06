@@ -3,7 +3,6 @@ import re
 import spacy
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
-import frontmatter
 
 # Try to load spaCy model, download if not available
 try:
@@ -73,18 +72,41 @@ class DocumentProcessor:
         return chunk_infos
 
 
+
     def process_markdown_file(file_path: str, topics: List[str]) -> Document:
         """Convierte un archivo Markdown en un objeto Document."""
+        def parse_frontmatter(content):
+            if not content.startswith('---'):
+                return {}, content
+            
+            try:
+                end_index = content.find('---', 3)
+                if end_index == -1:
+                    return {}, content
+                    
+                frontmatter_text = content[3:end_index].strip()
+                actual_content = content[end_index + 3:].strip()
+                
+                metadata = {}
+                for line in frontmatter_text.split('\n'):
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        metadata[key.strip()] = value.strip()
+                        
+                return metadata, actual_content
+            except Exception:
+                return {}, content
+                
         with open(file_path, 'r', encoding='utf-8') as f:
-            post = frontmatter.load(f)
-        metadata = post.metadata
-        content = post.content
+            metadata, content = parse_frontmatter(f.read())
+            
         return Document(
             name=Path(file_path).name,
             content=content,
             topics=[Topic(t) for t in topics],
             metadata=metadata
         )
+        
     
     def _chunk_text(self, text: str) -> List[str]:
         """Chunk text using spaCy's sentence boundaries with smart merging"""

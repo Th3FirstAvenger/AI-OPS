@@ -22,11 +22,79 @@ def initialize_knowledge(vdb: EnhancedStore):
     :param vdb: the reference to the Knowledge Base"""
     datasets_path = Path.home() / '.aiops' / 'datasets'
     knowledge_path = Path.home() / '.aiops' / 'knowledge'
-    
+    documents_dir = Path.home() / '.aiops' / 'knowledge' / 'documents'
+    markdown_index_path = Path.home() / '.aiops' / 'database' / 'markdown_upload_files.json'
+
     # Crear directorios si no existen
     datasets_path.mkdir(parents=True, exist_ok=True)
     knowledge_path.mkdir(parents=True, exist_ok=True)
-
+    documents_dir.mkdir(parents=True, exist_ok=True)
+    
+    if documents_dir.exists():
+        logger.info(f"Looking for Markdown files in {documents_dir}")
+        
+        # Process each collection directory
+        for collection_dir in documents_dir.glob('*/'):
+            collection_name = collection_dir.name
+            
+            # Skip if collection doesn't exist in Qdrant
+            if collection_name not in vdb.collections:
+                continue
+            
+            # Process each Markdown file
+            for md_file in collection_dir.glob('*.md'):
+                try:
+                    # Check if document already exists in collection
+                    doc_names = [doc.name for doc in vdb.collections[collection_name].documents]
+                    if md_file.name in doc_names:
+                        logger.info(f"Document '{md_file.name}' already in collection '{collection_name}'")
+                        continue
+                    
+                    # Process the Markdown file
+                    document = DocumentProcessor.process_markdown_file(str(md_file), [])
+                    
+                    # Add to collection
+                    vdb.upload(document, collection_name)
+                    logger.info(f"Added document '{document.name}' to collection '{collection_name}'")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing Markdown file {md_file}: {e}")
+    if markdown_index_path.exists():
+        try:
+            with open(markdown_index_path, 'r') as f:
+                markdown_index = json.load(f)
+                
+            for entry in markdown_index:
+                collection_name = entry.get('collection')
+                doc_path = entry.get('path')
+                topics = entry.get('topics', [])
+                
+                if not collection_name or not doc_path:
+                    continue
+                    
+                # Skip if collection doesn't exist
+                if collection_name not in vdb.collections:
+                    continue
+                    
+                # Skip if document already exists in collection
+                doc_names = [doc.name for doc in vdb.collections[collection_name].documents]
+                if Path(doc_path).name in doc_names:
+                    continue
+                    
+                # Check if file exists
+                if not Path(doc_path).exists():
+                    logger.warning(f"Indexed markdown file not found: {doc_path}")
+                    continue
+                    
+                # Process the file
+                document = DocumentProcessor.from_file(doc_path, topics)
+                
+                # Add to collection
+                vdb.upload(document, collection_name)
+                logger.info(f"Added indexed document '{document.name}' to collection '{collection_name}'")
+                
+        except Exception as e:
+            logger.error(f"Error loading markdown index: {e}")
     # Cargar datasets desde archivos JSON
     for dataset_file in datasets_path.glob('*.json'):
         try:
@@ -54,23 +122,74 @@ def initialize_knowledge(vdb: EnhancedStore):
         except Exception as e:
             logger.info(f"[!] Error loading dataset {dataset_file}: {e}")
 
-    # Sincronizar colecciones existentes en Qdrant
+    # Synchronize collections existing in Qdrant
     try:
         qdrant_collections = vdb._connection.get_collections().collections
         for qdrant_coll in qdrant_collections:
             coll_name = qdrant_coll.name
-            if coll_name not in vdb.collections:
-                metadata_file = knowledge_path / f"{coll_name}.json"
-                if metadata_file.exists():
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                    collection = Collection.from_dict(coll_name, metadata)
-                    vdb._collections[coll_name] = collection
-                    logger.info(f"[+] Loaded collection '{coll_name}' from metadata")
-                else:
-                    logger.info(f"[!] Collection '{coll_name}' exists in Qdrant but has no metadata file")
+            
+            # Skip if we already have this collection loaded
+            if coll_name in vdb.collections:
+                continue
+                
+            # Create a new collection object
+            collection = Collection(
+                collection_id=len(vdb._collections) + 1,
+                title=coll_name,
+                documents=[],
+                topics=[],
+                size=0
+            )
+            
+            # Try to retrieve document information from Qdrant
+            try:
+                # Get a sample of points to extract document names and topics
+                points = vdb._connection.scroll(
+                    collection_name=coll_name,
+                    limit=100,  # Get a reasonable sample
+                    with_payload=True,
+                    with_vectors=False
+                )[0]
+                
+                # Extract unique document names and topics
+                doc_names = set()
+                all_topics = set()
+                
+                for point in points:
+                    if 'doc_id' in point.payload:
+                        doc_names.add(point.payload['doc_id'])
+                    if 'topics' in point.payload and point.payload['topics']:
+                        for topic in point.payload['topics']:
+                            all_topics.add(topic)
+                
+                # Create placeholder documents
+                for doc_name in doc_names:
+                    collection.documents.append(Document(
+                        name=doc_name,
+                        content="",  # Empty content as placeholder
+                        topics=[Topic(t) for t in all_topics],
+                        source_type="markdown" if doc_name.endswith('.md') else "text"
+                    ))
+                
+                # Set topics for collection
+                collection.topics = [Topic(t) for t in all_topics]
+                
+                # Set size based on Qdrant count
+                count_result = vdb._connection.count(collection_name=coll_name)
+                collection.size = count_result.count
+                
+                # Add to collections
+                vdb._collections[coll_name] = collection
+                logger.info(f"[+] Reconstructed collection '{coll_name}' from Qdrant with {len(doc_names)} documents")
+                
+                # Save metadata for future
+                save_collection_metadata(collection, knowledge_path)
+                
+            except Exception as e:
+                logger.error(f"Error reconstructing collection '{coll_name}' from Qdrant: {e}")
+                
     except Exception as e:
-        logger.info(f"[!] Error syncing Qdrant collections: {e}")
+        logger.error(f"[!] Error syncing Qdrant collections: {e}")
         
 def save_collection_metadata(collection: Collection, knowledge_path: Path):
     """Guarda los metadatos de una colección en un archivo JSON."""

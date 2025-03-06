@@ -79,7 +79,7 @@ class EnhancedStore:
 
             try:
                 available = self.get_available_collections()
-                logger.info(f"Found {len(available) if available else 0} available collections")
+                logger.info(f"Found {len(list(available)) if available else 0} available collections")
             except qdrant_client.http.exceptions.ResponseHandlingException as err:
                 logger.error(f"Failed to get Qdrant collections: {err}")
                 raise RuntimeError("Can't get Qdrant collections") from err
@@ -592,8 +592,15 @@ class EnhancedStore:
             else collection.title + '.json'
         new_file = str(Path(self._metadata_path / 'knowledge' / file_name))
         
+        # Make sure document information is included
+        collection_data = collection.to_dict()
+        
+        # Log and save
         logger.info(f"Saving metadata for collection '{collection.title}' to {new_file}")
-        collection.to_json_metadata(new_file)
+        logger.info(f"Collection has {len(collection.documents)} documents and {len(collection.topics)} topics")
+        
+        with open(new_file, 'w', encoding='utf-8') as f:
+            json.dump(collection_data, f, indent=2)
 
     def get_available_collections(self) -> Optional[Dict[str, Collection]]:
         """Query qdrant for available collections in the database, then loads
@@ -633,7 +640,7 @@ class EnhancedStore:
                     ))
             except Exception as e:
                 logger.error(f"Error loading collection metadata from {p}: {e}")
-
+        return dict(zip(names, collections))
         return zip(names, collections)
 
     @staticmethod
