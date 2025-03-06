@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1,
+    "content": "Artificial intelligence is transforming the world with advances in machine learning and natural language processing."
+  },
+  {
+    "id": 2,
+    "content": "Large language models, like those developed by xAI, can generate human-like text and answer complex questions."
+  },
+  {
+    "id": 3,
+    "content": "Climate change is a global challenge that requires immediate action to reduce carbon emissions."
+  },
+  {
+    "id": 4,
+    "content": "Python programming is widely used in data science and AI development due to its simplicity and flexibility."
+  },
+  {
+    "id": 5,
+    "content": "RAG systems combine information retrieval and text generation to improve AI model responses."
+  }
+]
