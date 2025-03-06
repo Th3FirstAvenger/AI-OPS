@@ -95,8 +95,10 @@ class AgentClient:
             
 
             # RAG is disabled in the current version
-            # 'list collections': self.__list_collections,
-            # 'create collection': self.__create_collection
+            'list collections': self.__list_collections,
+            'create collection': self.__create_collection,
+            'upload document': self.__upload_document,
+            'maintain collection': self.__maintain_collection,
 
             # Add new command to toggle thinking
             'toggle thinking': self.toggle_thinking,
@@ -421,7 +423,6 @@ class AgentClient:
         except Exception as e:
             self.console.print(f'[red]Error: {e}[/]')
         
-    # RAG is disabled in the current version
     def __list_collections(self):
         """Know what collections are available"""
         response = self.client.get(
@@ -448,29 +449,17 @@ class AgentClient:
             self.console.print(tree)
 
     def __create_collection(self):
-        """Upload a collection to RAG"""
+        """Create a new collection"""
         collection_title = Prompt.ask(
             prompt='Title: ',
             console=self.console
         )
-        collection_path = Prompt.ask(
-            prompt='Path (leave blank for nothing): ',
-            console=self.console
-        )
 
         try:
-            if collection_path:
-                with open(collection_path, 'rb') as collection_file:
-                    response = requests.post(
-                        url=f'{self.api_url}/collections/new',
-                        data={'title': collection_title},
-                        files={'file': collection_file}
-                    )
-            else:
-                response = requests.post(
-                    url=f'{self.api_url}/collections/new',
-                    data={'title': collection_title}
-                )
+            response = requests.post(
+                url=f'{self.api_url}/collections/new',
+                data={'title': collection_title}
+            )
 
             response.raise_for_status()
             body: dict = response.json()
@@ -480,12 +469,90 @@ class AgentClient:
             else:
                 self.console.print(f"[bold blue][+] Success: [/] {body['success']}")
 
-        except OSError as err:
-            self.console.print(f"[bold red][!] Failed: [/] {err}")
-        except requests.exceptions.HTTPError as http_err:
-            self.console.print(f"[bold red][!] HTTP Error: [/] {http_err}")
-        except requests.exceptions.RequestException as req_err:
-            self.console.print(f"[bold red][!] Request Error: [/] {req_err}")
+        except Exception as e:
+            self.console.print(f"[bold red][!] Error: [/] {str(e)}")
+
+    def __upload_document(self):
+        """Upload a document to a collection"""
+        collection_name = Prompt.ask(
+            prompt='Collection name: ',
+            console=self.console
+        )
+        
+        document_path = Prompt.ask(
+            prompt='Document path: ',
+            console=self.console
+        )
+        
+        topics = Prompt.ask(
+            prompt='Topics (comma-separated): ',
+            console=self.console,
+            default=""
+        )
+        
+        try:
+            with open(document_path, 'rb') as document_file:
+                response = requests.post(
+                    url=f'{self.api_url}/collections/{collection_name}/upload',
+                    files={"file": (os.path.basename(document_path), document_file)},
+                    data={"topics": topics}
+                )
+            
+            response.raise_for_status()
+            body = response.json()
+            
+            if "error" in body:
+                self.console.print(f"[bold red][!] Failed: [/] {body['error']}")
+            else:
+                self.console.print(f"[bold blue][+] Success: [/] {body['message']}")
+        
+        except Exception as e:
+            self.console.print(f"[bold red][!] Error: [/] {str(e)}")
+
+    def __maintain_collection(self):
+        """Perform maintenance on a collection"""
+        collection_name = Prompt.ask(
+            prompt='Collection name: ',
+            console=self.console
+        )
+        
+        operation = Prompt.ask(
+            prompt='Operation (rebuild_bm25, verify): ',
+            console=self.console,
+            choices=["rebuild_bm25", "verify"]
+        )
+        
+        try:
+            response = requests.post(
+                url=f'{self.api_url}/collections/{collection_name}/maintenance',
+                data={"operation": operation}
+            )
+            
+            response.raise_for_status()
+            body = response.json()
+            
+            if "error" in body:
+                self.console.print(f"[bold red][!] Failed: [/] {body['error']}")
+            elif "report" in body:
+                report = body["report"]
+                self.console.print(f"[bold blue][+] Collection: [/] {report['collection']}")
+                self.console.print(f"[bold blue][+] Status: [/] {report['status']}")
+                
+                vector_status = "green" if report['vector_index']['status'] == 'ok' else "red"
+                self.console.print(f"[bold blue][+] Vector Index: [/] [{vector_status}]{report['vector_index']['status']}[/] ({report['vector_index']['count']} points)")
+                
+                bm25_status = "green" if report['bm25_index']['status'] == 'ok' else "red"
+                self.console.print(f"[bold blue][+] BM25 Index: [/] [{bm25_status}]{report['bm25_index']['status']}[/] ({report['bm25_index']['count']} chunks)")
+                
+                if report['issues']:
+                    self.console.print("[bold red][!] Issues:[/]")
+                    for issue in report['issues']:
+                        self.console.print(f"  - {issue}")
+            else:
+                self.console.print(f"[bold blue][+] Success: [/] {body.get('success', 'Operation completed')}")
+        
+        except Exception as e:
+            self.console.print(f"[bold red][!] Error: [/] {str(e)}")
 
     def prompt_text(self):
         """Returns a stylized prompt text"""
@@ -522,9 +589,11 @@ class AgentClient:
         self.console.print("- [bold blue]list sessions[/]   : Show the saved sessions.")        
 
         # RAG Related
-        # self.console.print("\n[bold white]RAG Related[/]")
-        # self.console.print("- [bold blue]list collections[/]  : Lists all collections in RAG.")
-        # self.console.print("- [bold blue]create collection[/] : Upload a collection to RAG.")
+        self.console.print("\n[bold white]RAG Related[/]")
+        self.console.print("- [bold blue]list collections[/]  : Lists all collections in RAG.")
+        self.console.print("- [bold blue]create collection[/] : Upload a collection to RAG.")
+        self.console.print("- [bold blue]upload document[/]   : Upload a document to a collection.")
+        self.console.print("- [bold blue]maintain collection[/]: Perform maintenance on a collection.")
 
         self.console.print("\n")
 

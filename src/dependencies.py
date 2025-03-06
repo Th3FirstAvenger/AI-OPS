@@ -1,13 +1,18 @@
 """
 Initializes all the necessary dependencies for the API.
 """
+import logging
 from src.config import AGENT_SETTINGS, RAG_SETTINGS
 from src.agent import Agent, build_agent
 from pathlib import Path
-from src.core.tools import TOOL_REGISTRY
+from src.core.tools import TOOL_REGISTRY, RAG_SEARCH
 from src.core.knowledge import load_rag
 
+# Set up logging
+logger = logging.getLogger(__name__)
+
 # Initialize the agent
+logger.info("Initializing agent with model: %s", AGENT_SETTINGS.MODEL)
 agent: Agent = build_agent(
     model=AGENT_SETTINGS.MODEL,
     inference_endpoint=AGENT_SETTINGS.ENDPOINT,
@@ -18,17 +23,37 @@ agent: Agent = build_agent(
 # Initialize the enhanced store if RAG is enabled
 store = None
 if AGENT_SETTINGS.USE_RAG:
-    store = load_rag(
-        rag_endpoint=RAG_SETTINGS.RAG_URL,
-        in_memory=RAG_SETTINGS.IN_MEMORY,
-        embedding_model=RAG_SETTINGS.EMBEDDING_MODEL,
-        embedding_url=RAG_SETTINGS.EMBEDDING_URL,
-        tool_registry=TOOL_REGISTRY,
-        use_reranker=RAG_SETTINGS.USE_RERANKER,
-        reranker_provider=RAG_SETTINGS.RERANKER_PROVIDER,
-        reranker_model=RAG_SETTINGS.RERANKER_MODEL,
-        reranker_confidence=RAG_SETTINGS.RERANKER_CONFIDENCE
-    )
+    logger.info("RAG is enabled. Initializing RAG system...")
+    try:
+        store = load_rag(
+            rag_endpoint=RAG_SETTINGS.RAG_URL,
+            in_memory=RAG_SETTINGS.IN_MEMORY,
+            embedding_model=RAG_SETTINGS.EMBEDDING_MODEL,
+            embedding_url=RAG_SETTINGS.EMBEDDING_URL,
+            tool_registry=TOOL_REGISTRY,
+            use_reranker=RAG_SETTINGS.USE_RERANKER,
+            reranker_provider=RAG_SETTINGS.RERANKER_PROVIDER,
+            reranker_model=RAG_SETTINGS.RERANKER_MODEL,
+            reranker_confidence=RAG_SETTINGS.RERANKER_CONFIDENCE
+        )
+        
+        # Pass the store reference to the RAG_SEARCH tool
+        RAG_SEARCH.set_store(store)
+        
+        # Log registered tools for debugging
+        tool_names = [t["function"]["name"] for t in TOOL_REGISTRY.marshal('base')]
+        logger.info("Registered tools after RAG initialization: %s", tool_names)
+        
+        # Log available collections
+        if store:
+            collection_names = list(store.collections.keys())
+            logger.info("Available collections: %s", collection_names)
+    except Exception as e:
+        logger.error("Failed to initialize RAG system: %s", str(e))
+        import traceback
+        traceback.print_exc()
+else:
+    logger.info("RAG is disabled. Skipping RAG initialization.")
 
 def get_agent():
     """Expose agent for Dependency Injection"""

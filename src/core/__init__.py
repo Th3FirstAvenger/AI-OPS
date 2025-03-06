@@ -1,4 +1,4 @@
-from src.core.knowledge import Store
+from src.core.knowledge import EnhancedStore
 from src.core.memory import (
     Role,
     Message,
