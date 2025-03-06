@@ -6,16 +6,36 @@ import os
 import json
 import requests
 from pathlib import Path
+from qdrant_client import QdrantClient
+from qdrant_client.http import models as rest
+import ollama
 
 # Configuration
-API_URL = "http://localhost:8000"  # Adjust if needed
+API_URL = "http://localhost:8000"
 TEST_DATASET_NAME = "test_dataset.json"
+QDRANT_URL = "http://localhost:6333"
+COLLECTION_NAME = "test_collection"
+EMBEDDING_MODEL = "nomic-embed-text:latest"
+OLLAMA_HOST = "http://localhost:11434"
 
+# Inicializar el cliente de Ollama una vez
+encoder = ollama.Client(host=OLLAMA_HOST).embeddings
+
+def embed_text(text):
+    """Genera embeddings para un texto dado usando Ollama."""
+    try:
+        response = encoder(model=EMBEDDING_MODEL, prompt=text)
+        embedding = response['embedding']
+        return embedding
+    except Exception as e:
+        print(f"❌ Error generating embedding for text '{text[:20]}...': {e}")
+        return None
+    
 def check_qdrant_connection():
     """Check if Qdrant is running and accessible"""
     print("\n1. Testing Qdrant Connection")
     try:
-        response = requests.get("http://localhost:6333/collections")
+        response = requests.get(f"{QDRANT_URL}/collections")
         if response.status_code == 200:
             print("✅ Qdrant connection successful")
             collections = response.json().get("result", {}).get("collections", [])
@@ -31,8 +51,8 @@ def check_qdrant_connection():
 def create_test_dataset():
     """Create a test dataset file if it doesn't exist"""
     print("\n2. Creating Test Dataset")
-    
-    datasets_dir = Path.home() / '.aiops' / 'datasets'
+    datasets_dir = Path.home() / '.aiops' / 'knowledge'
+
     if not datasets_dir.exists():
         print(f"   Creating datasets directory: {datasets_dir}")
         datasets_dir.mkdir(parents=True, exist_ok=True)
@@ -67,9 +87,43 @@ def create_test_dataset():
         print(f"❌ Failed to create test dataset: {e}")
         return None
 
+def upload_to_qdrant(dataset_path):
+    print("\n3. Uploading Test Dataset to Qdrant")
+    try:
+        client = QdrantClient(QDRANT_URL)
+        if not client.collection_exists(COLLECTION_NAME):
+            sample_embedding = embed_text("test")
+            if sample_embedding is None:
+                raise ValueError("No se pudo generar un embedding de muestra.")
+            vector_size = len(sample_embedding)
+            client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=rest.VectorParams(size=vector_size, distance=rest.Distance.COSINE)
+            )
+            print(f"   Created collection: {COLLECTION_NAME} with vector size {vector_size}")
+        
+        with open(dataset_path, 'r') as f:
+            data = json.load(f)
+            documents = data['documents']  # Accede a la lista de documentos
+        
+        for i, doc in enumerate(documents):
+            vector = embed_text(doc['content'])  # Genera embedding del contenido
+            if vector is None:
+                continue
+            client.upsert(
+                collection_name=COLLECTION_NAME,
+                points=[rest.PointStruct(id=i, vector=vector, payload=doc)]
+            )
+        
+        print(f"✅ Uploaded {len(documents)} documents to Qdrant collection '{COLLECTION_NAME}'")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to upload to Qdrant: {e}")
+        return False
+
 def check_api_health():
     """Check if the API is running"""
-    print("\n3. Testing API Connection")
+    print("\n4. Testing API Connection")
     try:
         response = requests.get(f"{API_URL}/ping")
         if response.status_code == 200:
@@ -84,19 +138,19 @@ def check_api_health():
 
 def test_rag_search():
     """Test the RAG search functionality directly"""
-    print("\n4. Testing RAG Search Tool")
+    print("\n5. Testing RAG Search Tool")
     
     # Test via agent query
     print("   Testing via agent query...")
     
-    # First create a new session
+    # Crear una nueva sesión
     try:
         session_response = requests.post(f"{API_URL}/sessions", params={"name": "test_rag_session"})
         session_response.raise_for_status()
         sid = session_response.json().get("sid")
         print(f"   Created test session with ID: {sid}")
         
-        # Now try a RAG query
+        # Realizar una consulta RAG
         query = {
             "query": "Search our collection for information about nmap stealth scanning"
         }
@@ -106,7 +160,7 @@ def test_rag_search():
             print("✅ Successfully sent RAG query to agent")
             print(f"   Response content type: {response.headers.get('content-type', 'unknown')}")
             
-            # Try to read a bit of the streaming response
+            # Mostrar una vista previa de la respuesta
             content = response.content.decode('utf-8') if response.content else "No content"
             print(f"   Response preview: {content[:100]}...")
             return True
@@ -126,14 +180,25 @@ def main():
     print("RAG FUNCTIONALITY TEST SCRIPT")
     print("=" * 50)
     
+    # Ejecutar las verificaciones preliminares
     qdrant_ok = check_qdrant_connection()
     dataset_path = create_test_dataset()
+    
+    # Subir los datos a Qdrant si las verificaciones pasan
+    if qdrant_ok and dataset_path:
+        upload_ok = upload_to_qdrant(dataset_path)
+        if not upload_ok:
+            print("\n❌ Failed to upload dataset to Qdrant. Aborting further tests.")
+            return
+    
+    # Verificar la API
     api_ok = check_api_health()
     
-    if qdrant_ok and dataset_path and api_ok:
+    # Proceder con la prueba de RAG si todo está bien
+    if qdrant_ok and dataset_path and api_ok and upload_ok:
         print("\n✅ Preliminary checks passed. Waiting a moment for the system to initialize...")
         import time
-        time.sleep(5)  # Allow time for the system to initialize
+        time.sleep(5)  # Dar tiempo al sistema para inicializarse
         
         rag_ok = test_rag_search()
         if rag_ok:

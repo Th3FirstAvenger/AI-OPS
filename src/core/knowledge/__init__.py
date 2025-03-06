@@ -20,83 +20,14 @@ def initialize_knowledge(vdb: EnhancedStore):
     """Used to initialize and keep updated the Knowledge Base.
     Already existing Collections will not be overwritten.
     :param vdb: the reference to the Knowledge Base"""
-    datasets_path = Path.home() / '.aiops' / 'datasets'
     knowledge_path = Path.home() / '.aiops' / 'knowledge'
-    documents_dir = Path.home() / '.aiops' / 'knowledge' / 'documents'
-    markdown_index_path = Path.home() / '.aiops' / 'database' / 'markdown_upload_files.json'
 
-    # Crear directorios si no existen
-    datasets_path.mkdir(parents=True, exist_ok=True)
+    # Create directories if they don't exist
     knowledge_path.mkdir(parents=True, exist_ok=True)
-    documents_dir.mkdir(parents=True, exist_ok=True)
     
-    if documents_dir.exists():
-        logger.info(f"Looking for Markdown files in {documents_dir}")
-        
-        # Process each collection directory
-        for collection_dir in documents_dir.glob('*/'):
-            collection_name = collection_dir.name
-            
-            # Skip if collection doesn't exist in Qdrant
-            if collection_name not in vdb.collections:
-                continue
-            
-            # Process each Markdown file
-            for md_file in collection_dir.glob('*.md'):
-                try:
-                    # Check if document already exists in collection
-                    doc_names = [doc.name for doc in vdb.collections[collection_name].documents]
-                    if md_file.name in doc_names:
-                        logger.info(f"Document '{md_file.name}' already in collection '{collection_name}'")
-                        continue
-                    
-                    # Process the Markdown file
-                    document = DocumentProcessor.process_markdown_file(str(md_file), [])
-                    
-                    # Add to collection
-                    vdb.upload(document, collection_name)
-                    logger.info(f"Added document '{document.name}' to collection '{collection_name}'")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing Markdown file {md_file}: {e}")
-    if markdown_index_path.exists():
-        try:
-            with open(markdown_index_path, 'r') as f:
-                markdown_index = json.load(f)
-                
-            for entry in markdown_index:
-                collection_name = entry.get('collection')
-                doc_path = entry.get('path')
-                topics = entry.get('topics', [])
-                
-                if not collection_name or not doc_path:
-                    continue
-                    
-                # Skip if collection doesn't exist
-                if collection_name not in vdb.collections:
-                    continue
-                    
-                # Skip if document already exists in collection
-                doc_names = [doc.name for doc in vdb.collections[collection_name].documents]
-                if Path(doc_path).name in doc_names:
-                    continue
-                    
-                # Check if file exists
-                if not Path(doc_path).exists():
-                    logger.warning(f"Indexed markdown file not found: {doc_path}")
-                    continue
-                    
-                # Process the file
-                document = DocumentProcessor.from_file(doc_path, topics)
-                
-                # Add to collection
-                vdb.upload(document, collection_name)
-                logger.info(f"Added indexed document '{document.name}' to collection '{collection_name}'")
-                
-        except Exception as e:
-            logger.error(f"Error loading markdown index: {e}")
-    # Cargar datasets desde archivos JSON
-    for dataset_file in datasets_path.glob('*.json'):
+    # Load collections from JSON files in the knowledge directory
+    for dataset_file in knowledge_path.glob('*.json'):
+        logger.info(f"Found JSON file: {dataset_file}")
         try:
             with open(dataset_file, 'r') as f:
                 dataset_data = json.load(f)
@@ -107,18 +38,6 @@ def initialize_knowledge(vdb: EnhancedStore):
                 logger.info(f"[+] Created collection '{collection.title}'")
             else:
                 logger.info(f"[+] Collection '{collection.title}' already exists")
-
-            # Procesar documentos Markdown
-            if 'documents' in dataset_data:
-                for doc_info in dataset_data['documents']:
-                    if doc_info['path'].endswith('.md'):
-                        try:
-                            doc_path = datasets_path / doc_info['path']
-                            document = DocumentProcessor.process_markdown_file(str(doc_path), doc_info.get('topics', []))
-                            collection.documents.append(document)
-                            logger.info(f"[+] Added document '{doc_path.name}' to '{collection.title}'")
-                        except Exception as e:
-                            logger.info(f"[!] Error processing Markdown file {doc_path}: {e}")
         except Exception as e:
             logger.info(f"[!] Error loading dataset {dataset_file}: {e}")
 
@@ -168,7 +87,7 @@ def initialize_knowledge(vdb: EnhancedStore):
                         name=doc_name,
                         content="",  # Empty content as placeholder
                         topics=[Topic(t) for t in all_topics],
-                        source_type="markdown" if doc_name.endswith('.md') else "text"
+                        source_type="text"
                     ))
                 
                 # Set topics for collection

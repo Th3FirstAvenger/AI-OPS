@@ -39,45 +39,7 @@ class Document:
         topics_str = ", ".join([str(topic) for topic in self.topics])
         return f'{self.name} [{topics_str}]\n{self.content}'
     
-    @staticmethod
-    def from_markdown(filename: str, content: str, topics: List[str]) -> 'Document':
-        """Create document from markdown content with frontmatter parsing"""
-        # Extract metadata from frontmatter if present
-        metadata, cleaned_content = process_frontmatter(content)
-        
-        return Document(
-            name=filename,
-            content=cleaned_content,
-            topics=[Topic(t) for t in topics],
-            source_type="markdown",
-            metadata=metadata
-        )
 
-def process_frontmatter(content: str) -> tuple[Dict[str, Any], str]:
-    """Extract YAML frontmatter from markdown content if present"""
-    metadata = {}
-    cleaned_content = content
-    
-    # Check if content has frontmatter (starts with ---)
-    if content.startswith('---'):
-        try:
-            # Find the end of the frontmatter
-            end_index = content.find('---', 3)
-            if end_index != -1:
-                frontmatter = content[3:end_index].strip()
-                # Parse the frontmatter (simple key-value parsing)
-                for line in frontmatter.split('\n'):
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        metadata[key.strip()] = value.strip()
-                
-                # Remove frontmatter from content
-                cleaned_content = content[end_index + 3:].strip()
-        except Exception:
-            # If parsing fails, return the original content
-            pass
-            
-    return metadata, cleaned_content
 
 @dataclass
 class Collection:
@@ -180,12 +142,12 @@ class Collection:
             json.dump(collection_metadata, fp, indent=2)
 
     def to_dict(self):
-        """Convert collection to dictionary (strips out content)"""
+        """Convert collection to dictionary with full content"""
         docs = []
         for document in self.documents:
             docs.append({
                 'name': document.name,
-                'content': '',  # Strip content to save space
+                'content': document.content, 
                 'topics': [topic.name for topic in document.topics],
                 'source_type': document.source_type,
                 'metadata': document.metadata

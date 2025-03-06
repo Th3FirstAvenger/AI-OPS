@@ -4,6 +4,7 @@ import time
 import numpy as np
 from typing import List, Dict, Any, Optional, Union
 from abc import ABC, abstractmethod
+import ollama
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,6 @@ class OllamaReranker(BaseReranker):
     def _initialize_client(self):
         """Initialize Ollama client"""
         try:
-            import ollama
             self.client = ollama.Client(host=self.endpoint)
             
             # Test the connection

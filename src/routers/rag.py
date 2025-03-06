@@ -123,7 +123,6 @@ async def upload_document(
     topics: str = Form(None),
     store = Depends(get_store)
 ):
-
     """Upload a document to a collection."""
     if not store:
         return {"error": "RAG is not available"}
@@ -134,12 +133,6 @@ async def upload_document(
     # Process topics
     topic_list = topics.split(',') if topics and topics.strip() else []
     
-    # Create necessary directories
-    documents_dir = Path.home() / '.aiops' / 'knowledge' / 'documents' / collection_name
-    database_dir = Path.home() / '.aiops' / 'database'
-    documents_dir.mkdir(parents=True, exist_ok=True)
-    database_dir.mkdir(parents=True, exist_ok=True)
-    
     # Create temporary file for processing
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix)
     temp_path = temp_file.name
@@ -148,11 +141,6 @@ async def upload_document(
         # Read file content
         content = await file.read()
         
-        # Save original file to documents directory
-        document_path = documents_dir / file.filename
-        with open(document_path, 'wb') as f:
-            f.write(content)
-        
         # Write to temp file for processing
         with open(temp_path, 'wb') as f:
             f.write(content)
@@ -160,56 +148,18 @@ async def upload_document(
         # Process document
         document = DocumentProcessor.from_file(temp_path, topic_list)
         
-        # Upload to collection
-        store.upload(document, collection_name)
-                # Add topics to collection
-        
+        # Add topics to collection
         for topic in topic_list:
-            # Create Topic object if needed
             topic_obj = Topic(topic)
-            # Add to collection's topics if not already there
             if topic_obj not in store.collections[collection_name].topics:
                 store.collections[collection_name].topics.append(topic_obj)
+        
+        # Upload to collection
+        store.upload(document, collection_name)
         
         # Update the collection metadata file
         if hasattr(store, 'save_metadata') and callable(store.save_metadata):
             store.save_metadata(store.collections[collection_name])
-        
-        # Update markdown index
-        index_path = database_dir / "markdown_upload_files.json"
-        
-        # Load existing index or create new
-        if index_path.exists():
-            with open(index_path, 'r') as f:
-                try:
-                    index_data = json.load(f)
-                except:
-                    index_data = []
-        else:
-            index_data = []
-        
-        # Create entry for this document
-        document_entry = {
-            "title": file.filename,
-            "topics": topic_list,
-            "path": str(document_path),
-            "collection": collection_name
-        }
-        
-        # Update or add entry
-        updated = False
-        for i, entry in enumerate(index_data):
-            if entry.get("title") == file.filename and entry.get("collection") == collection_name:
-                index_data[i] = document_entry
-                updated = True
-                break
-        
-        if not updated:
-            index_data.append(document_entry)
-        
-        # Save updated index
-        with open(index_path, 'w') as f:
-            json.dump(index_data, f, indent=2)
         
         return {
             "success": True,
