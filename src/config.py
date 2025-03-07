@@ -9,7 +9,7 @@ class AgentSettings(BaseSettings):
     ENDPOINT: str = os.environ.get('ENDPOINT', 'http://localhost:11434')
     PROVIDER: str = os.environ.get('PROVIDER', 'ollama')
     PROVIDER_KEY: str = os.environ.get('PROVIDER_KEY', '')
-    USE_RAG: bool = os.environ.get('USE_RAG', True)
+    USE_RAG: bool = os.environ.get('USE_RAG', False)
 
 class RAGSettings(BaseSettings):
     """Settings for Qdrant vector database"""

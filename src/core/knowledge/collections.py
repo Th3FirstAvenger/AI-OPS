@@ -81,7 +81,7 @@ class Collection:
 
         return Collection.from_dict(title, data)
 
-    @staticmethod
+    """@staticmethod
     def from_dict(collection_title: str, data: list):
         # json scheme validation
         format_err_msg = f"Invalid format."
@@ -131,6 +131,68 @@ class Collection:
             title=collection_title,
             documents=documents,
             topics=list(set(all_topics)),
+            size=len(documents)
+        )"""
+    
+    @staticmethod
+    def from_dict(data: dict):
+        # Validate that data is a dictionary
+        if not isinstance(data, dict):
+            raise ValueError("Expected a dictionary for collection data.")
+        
+        # Extract collection title
+        collection_title = data.get('title')
+        if not collection_title:
+            raise ValueError("Missing 'title' in collection data.")
+        
+        # Extract documents
+        documents_data = data.get('documents', [])
+        if not isinstance(documents_data, list):
+            raise ValueError("Expected a list for 'documents'.")
+        
+        documents = []
+        all_topics = set()  # Use a set to avoid duplicates
+        
+        # Process each document
+        for item in documents_data:
+            if not isinstance(item, dict):
+                raise ValueError("Each document must be a dictionary.")
+            
+            name = item.get('name')
+            content = item.get('content')
+            if not name or not content:
+                raise ValueError("Each document must have 'name' and 'content'.")
+            
+            # Extract document topics
+            topics_data = item.get('topics', [])
+            if isinstance(topics_data, list):
+                topics = [Topic(topic) for topic in topics_data]
+                all_topics.update(topics_data)  # Add topics to global set
+            else:
+                topics = [Topic(topics_data)]
+                all_topics.add(topics_data)
+            
+            # Extract metadata, excluding known fields
+            metadata = {k: v for k, v in item.items() if k not in ['name', 'content', 'topics', 'source_type']}
+            
+            # Create document and add to list
+            documents.append(Document(
+                name=name,
+                content=content,
+                topics=topics,
+                metadata=metadata,
+                source_type=item.get('source_type', 'text')
+            ))
+        
+        # Extract collection topics
+        collection_topics = [Topic(topic) for topic in data.get('topics', [])]
+        
+        # Create and return collection
+        return Collection(
+            collection_id=data.get('id', -1),
+            title=collection_title,
+            documents=documents,
+            topics=collection_topics,
             size=len(documents)
         )
 

@@ -8,7 +8,14 @@ from pathlib import Path
 from src.core.tools import TOOL_REGISTRY, RAG_SEARCH
 from src.core.knowledge import load_rag
 
-# Set up logging
+# Set up logging save path
+log_path = Path.home() / '.aiops' / 'logs'
+log_path.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    filename=log_path / 'api.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)   
 logger = logging.getLogger(__name__)
 
 # Initialize the agent
@@ -21,7 +28,8 @@ agent: Agent = build_agent(
 )
 
 # Initialize the enhanced store if RAG is enabled
-store = None
+logging.info("Initializing RAG system...")
+# store = None
 if AGENT_SETTINGS.USE_RAG:
     logger.info("RAG is enabled. Initializing RAG system...")
     try:
@@ -37,6 +45,11 @@ if AGENT_SETTINGS.USE_RAG:
             reranker_confidence=RAG_SETTINGS.RERANKER_CONFIDENCE
         )
         
+        logging.info("RAG system initialized successfully. Available collections:")
+        for cname, coll in store.collections.items():
+            doc_topics = ", ".join([topic.name for topic in coll.topics])
+            logging.info(f"- '{cname}': {doc_topics}")
+
         # Pass the store reference to the RAG_SEARCH tool
         RAG_SEARCH.set_store(store)
         

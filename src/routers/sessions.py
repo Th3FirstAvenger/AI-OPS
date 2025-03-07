@@ -17,6 +17,9 @@ from fastapi.responses import StreamingResponse
 
 from src.agent import Agent
 from src.dependencies import get_agent
+import logging
+
+logger = logging.getLogger(__name__)
 
 session_router = APIRouter()
 
@@ -65,6 +68,7 @@ async def new_session(name: str, agent: Agent = Depends(get_agent)):
     Returns the new session id.
     """
     sessions = agent.get_sessions()
+    logger.info(f"Creating new session with name: {name}")
 
     if len(sessions) == 0:
         new_id = 1

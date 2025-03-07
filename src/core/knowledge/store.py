@@ -189,120 +189,6 @@ class EnhancedStore:
         logger.info(f"Collection '{collection.title}' created successfully with {document_count} documents")
         return collection.title
 
-    def upload(
-        self,
-        document: Document,
-        collection_name: str
-    ):
-        """Performs chunking and embedding of a document
-        and uploads it to the specified collection"""
-        try:
-            if not isinstance(collection_name, str):
-                raise TypeError(f'Expected str for collection_name, found {type(collection_name)}')
-            if collection_name not in self._collections:
-                raise ValueError(f"Collection '{collection_name}' does not exist")
-            
-            logger.info(f"Processing document '{document.name}' for collection '{collection_name}'")
-            
-            # Process document into chunks with metadata
-            chunks = self.document_processor.process_document(document)
-            if not chunks:
-                logger.warning(f"No chunks extracted from document '{document.name}'")
-                return
-                
-            logger.info(f"Document '{document.name}' processed into {len(chunks)} chunks")
-            
-            # Add chunks to BM25 index
-            try:
-                self.bm25_index.add_collection(collection_name, chunks)
-                if not self.in_memory:
-                    self._save_bm25_index(collection_name)
-                logger.info(f"Added chunks to BM25 index for collection '{collection_name}'")
-            except Exception as e:
-                logger.error(f"BM25 indexing failed for '{document.name}': {e}")
-                logger.warning("Falling back to vector search only")
-                import traceback
-                traceback.print_exc()
-            
-            # Create embeddings for chunks
-            try:
-                chunk_embeddings = []
-                for i, chunk in enumerate(chunks):
-                    try:
-                        embedding = self._encoder(self._embedding_model, chunk.text)['embedding']
-                        chunk_embeddings.append({
-                            'text': chunk.text,
-                            'doc_id': chunk.doc_id,
-                            'chunk_id': chunk.chunk_id,
-                            'topics': chunk.topics,
-                            'metadata': chunk.metadata,
-                            'embedding': embedding
-                        })
-                        if (i+1) % 10 == 0:
-                            logger.debug(f"Processed {i+1}/{len(chunks)} embeddings")
-                    except Exception as chunk_err:
-                        logger.error(f"Failed to embed chunk {i} of '{document.name}': {chunk_err}")
-                
-                if not chunk_embeddings:
-                    raise ValueError(f"Failed to create any embeddings for '{document.name}'")
-                    
-                logger.info(f"Created {len(chunk_embeddings)} embeddings for '{document.name}'")
-                
-            except Exception as emb_err:
-                logger.error(f"Embedding creation failed for '{document.name}': {emb_err}")
-                raise RuntimeError(f"Embedding creation failed: {emb_err}")
-                
-            # Get current collection size for ID assignment
-            current_len = self._collections[collection_name].size
-
-            # Prepare points for Qdrant
-            points = [
-                models.PointStruct(
-                    id=current_len + i,
-                    vector=item['embedding'],
-                    payload={
-                        'text': item['text'],
-                        'doc_id': item['doc_id'],
-                        'chunk_id': item['chunk_id'],
-                        'topics': item['topics'],
-                        'metadata': item['metadata']
-                    }
-                )
-                for i, item in enumerate(chunk_embeddings)
-            ]
-
-            # Upload Points to Qdrant and update Collection metadata
-            try:
-                self._connection.upload_points(
-                    collection_name=collection_name,
-                    points=points
-                )
-                logger.info(f"Uploaded {len(points)} points to Qdrant collection '{collection_name}'")
-            except Exception as upload_err:
-                logger.error(f"Failed to upload points to Qdrant: {upload_err}")
-                raise RuntimeError(f"Failed to upload to Qdrant: {upload_err}")
-
-            # Add the document to the collection's document list if not already present
-            doc_names = [doc.name for doc in self._collections[collection_name].documents]
-            if document.name not in doc_names:
-                self._collections[collection_name].documents.append(document)
-            
-            # Update collection size
-            self._collections[collection_name].size = current_len + len(chunks)
-            logger.info(f"Collection '{collection_name}' size updated to {self._collections[collection_name].size}")
-            
-            # Update metadata
-            if not self.in_memory:
-                self.save_metadata(self._collections[collection_name])
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error uploading document '{document.name}' to '{collection_name}': {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-
     def hybrid_retrieve(
         self,
         query: str,
@@ -702,51 +588,48 @@ class EnhancedStore:
             return None
         return self._collections[name]
     
-    def upload(
-        self,
-        document: Document,
-        collection_name: str,
-        batch_size: int = 10
-    ):
+    def upload(self, document: Document, collection_name: str, batch_size: int = 10):
         """
-        Performs chunking and embedding of a document
-        and uploads it to the specified collection
-        
+        Uploads a document to the specified collection, processing it into chunks,
+        generating embeddings and storing them in both BM25 index and Qdrant.
+
         Args:
-            document: Document to upload
-            collection_name: Name of collection to upload to
-            batch_size: Size of batches for processing embeddings
+            document: The document to upload.
+            collection_name: Name of the collection where the document will be uploaded.
+            batch_size: Batch size for processing embeddings.
+
+        Returns:
+            True if upload was successful, False otherwise.
         """
         try:
+            # Parameter validation
             if not isinstance(collection_name, str):
-                raise TypeError(f'Expected str for collection_name, found {type(collection_name)}')
+                raise TypeError(f"Expected str for collection_name, found {type(collection_name)}")
             if collection_name not in self._collections:
                 raise ValueError(f"Collection '{collection_name}' does not exist")
-            
+
             logger.info(f"Processing document '{document.name}' for collection '{collection_name}'")
-            
-            # Process document into chunks with metadata
+
+            # Process document into chunks
             chunks = self.document_processor.process_document(document)
             if not chunks:
                 logger.warning(f"No chunks extracted from document '{document.name}'")
-                return
-                
+                return False
+
             chunk_count = len(chunks)
             logger.info(f"Document '{document.name}' processed into {chunk_count} chunks")
-            
+
             # Add chunks to BM25 index
             try:
                 self.bm25_index.add_collection(collection_name, chunks)
                 if not self.in_memory:
                     self._save_bm25_index(collection_name)
-                logger.info(f"Added chunks to BM25 index for collection '{collection_name}'")
+                logger.info(f"Chunks added to BM25 index for collection '{collection_name}'")
             except Exception as e:
                 logger.error(f"BM25 indexing failed for '{document.name}': {e}")
-                logger.warning("Falling back to vector search only")
-                import traceback
-                traceback.print_exc()
-            
-            
+                logger.warning("Will use vector search only")
+
+            # Function to process a batch of chunks and generate embeddings
             def process_batch(chunk_batch):
                 batch_embeddings = []
                 for chunk in chunk_batch:
@@ -761,17 +644,17 @@ class EnhancedStore:
                             'embedding': embedding
                         })
                     except Exception as chunk_err:
-                        logger.error(f"Failed to embed chunk {chunk.chunk_id} of '{document.name}': {chunk_err}")
+                        logger.error(f"Failed to generate embedding for chunk {chunk.chunk_id} of '{document.name}': {chunk_err}")
                 return batch_embeddings
-                
+
+            # Process chunks in batches to generate embeddings
             chunk_embeddings = batch_process(chunks, process_batch, batch_size)
-            
             if not chunk_embeddings:
-                logger.error(f"Failed to create any embeddings for '{document.name}'")
+                logger.error(f"No embeddings created for '{document.name}'")
                 return False
-                
+
             logger.info(f"Created {len(chunk_embeddings)} embeddings for '{document.name}'")
-            
+
             # Get current collection size for ID assignment
             current_len = self._collections[collection_name].size
 
@@ -791,7 +674,7 @@ class EnhancedStore:
                 for i, item in enumerate(chunk_embeddings)
             ]
 
-            # Upload Points to Qdrant and update Collection metadata
+            # Upload points to Qdrant
             try:
                 self._connection.upload_points(
                     collection_name=collection_name,
@@ -800,25 +683,138 @@ class EnhancedStore:
                 logger.info(f"Uploaded {len(points)} points to Qdrant collection '{collection_name}'")
             except Exception as upload_err:
                 logger.error(f"Failed to upload points to Qdrant: {upload_err}")
-                raise RuntimeError(f"Failed to upload to Qdrant: {upload_err}")
+                raise RuntimeError(f"Failed uploading to Qdrant: {upload_err}")
 
-            # Add the document to the collection's document list if not already present
+            # Add document to collection's document list if not present
             doc_names = [doc.name for doc in self._collections[collection_name].documents]
             if document.name not in doc_names:
                 self._collections[collection_name].documents.append(document)
-            
+
             # Update collection size
             self._collections[collection_name].size = current_len + len(chunks)
             logger.info(f"Collection '{collection_name}' size updated to {self._collections[collection_name].size}")
-            
-            # Update metadata
+
+            # Save metadata if not in memory
             if not self.in_memory:
                 self.save_metadata(self._collections[collection_name])
-                
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Error uploading document '{document.name}' to '{collection_name}': {e}")
             import traceback
             traceback.print_exc()
-            raise
+            return False
+    
+    def hybrid_search(
+        self,
+        query: str,
+        collection_name: str = None,
+        collection_title: str = None,
+        topics: List[str] = None,
+        bm25_weight: float = 0.3,
+        vector_weight: float = 0.7,
+        limit: int = 5,
+        rerank: bool = True
+    ) -> Dict[str, List[str]]:
+        """
+        Perform hybrid retrieval across multiple collections based on various criteria.
+        
+        Args:
+            query: The search query
+            collection_name: Optional specific collection name to search in
+            collection_title: Optional collection title pattern to match
+            topics: Optional list of topics to filter collections and results
+            bm25_weight: Weight for BM25 scores in the combined ranking
+            vector_weight: Weight for vector scores in the combined ranking
+            limit: Maximum number of results to return per collection
+            rerank: Whether to apply neural reranking
+            
+        Returns:
+            Dictionary mapping collection names to lists of matching text chunks
+        """
+        try:
+            if not query:
+                raise ValueError('Query cannot be empty')
+            
+            logger.info(f"Executing hybrid search: query='{query}'")
+            # Create a cache key
+            cache_key = f"{query}|{collection_name or ''}|{collection_title or ''}|{','.join(topics or [])}|{limit}|{rerank}"
+            logger.info(f"Hybrid search cache key: {cache_key}")
+
+            # Check cache
+            current_time = time.time()
+            if cache_key in self.result_cache:
+                cache_entry = self.result_cache[cache_key]
+                if current_time - cache_entry['timestamp'] < self.cache_ttl:
+                    logger.info(f"Cache hit for query: {query}")
+                    return cache_entry['results']
+            
+            # Determine which collections to search
+            target_collections = []
+            
+            if collection_name:
+                # Search in specific collection by name
+                if collection_name not in self._collections:
+                    logger.warning(f"Collection '{collection_name}' not found")
+                    return {}
+                target_collections.append(collection_name)
+            elif collection_title:
+                # Search in collections matching title pattern
+                for name, collection in self._collections.items():
+                    if collection_title.lower() in collection.title.lower():
+                        target_collections.append(name)
+            elif topics:
+                # Search in collections containing any of the specified topics
+                topics_lower = [t.lower() for t in topics]
+                for name, collection in self._collections.items():
+                    collection_topics = [t.name.lower() for t in collection.topics]
+                    if any(topic in collection_topics for topic in topics_lower):
+                        target_collections.append(name)
+            else:
+                # Search in all collections if no criteria specified
+                target_collections = list(self._collections.keys())
+                
+            if not target_collections:
+                logger.warning(f"No matching collections found for the search criteria")
+                return {}
+                
+            logger.info(f"Searching in collections: {target_collections}")
+            
+            # Search in each target collection
+            results = {}
+            for coll_name in target_collections:
+                try:
+                    coll_results = self.hybrid_retrieve(
+                        query=query,
+                        collection_name=coll_name,
+                        topics=topics,
+                        bm25_weight=bm25_weight,
+                        vector_weight=vector_weight,
+                        limit=limit,
+                        rerank=rerank
+                    )
+                    
+                    if coll_results:
+                        results[coll_name] = coll_results
+                except Exception as e:
+                    logger.error(f"Error searching collection '{coll_name}': {e}")
+                    continue
+                    
+            # Update cache
+            self.result_cache[cache_key] = {
+                'timestamp': current_time,
+                'results': results
+            }
+            
+            # Trim cache if it grows too large
+            if len(self.result_cache) > self.max_cache_size:
+                self._trim_cache()
+                
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in hybrid search: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}

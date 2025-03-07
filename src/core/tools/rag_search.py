@@ -1,7 +1,8 @@
-"""RAG Search Tool Implementation"""
-from typing import Optional, List
+"""RAG Search Tool Implementation with enhanced search capabilities"""
+from typing import Optional, List, Dict
 from pathlib import Path
 import logging
+
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +10,7 @@ class RAGSearch:
     """Implementation of RAG search functionality for the AI-OPS system"""
     
     name: str = 'RAG Search'
-    usage: str = "Search documents in the RAG Vector Database using advanced hybrid retrieval."
+    usage: str = "Search documents in the RAG Vector Database using advanced hybrid retrieval with flexible collection targeting."
     
     def __init__(self):
         self.store = None
@@ -19,28 +20,32 @@ class RAGSearch:
         self.store = store
         logger.info(f"RAG Search tool initialized with store: {self.store is not None}")
     
-    def run(self, rag_query: str, collection: str, topics: Optional[str] = None, detail_level: str = "medium") -> str:
+    def run(
+        self, 
+        rag_query: str, 
+        collection: Optional[str] = None, 
+        topics: Optional[str] = None, 
+        collection_title: Optional[str] = None,
+        detail_level: str = "medium"
+    ) -> str:
         """
         Search the knowledge base with advanced options.
         
         Args:
             rag_query: The search query
-            collection: The collection name to search in
+            collection: Optional specific collection name to search in
             topics: Optional comma-separated list of topics to filter by
+            collection_title: Optional collection title pattern to match
             detail_level: Amount of detail to return ("brief", "medium", or "detailed")
             
         Returns:
             Retrieved information from the knowledge base
         """
+        logger.info(f"Searching RAG with query1: {rag_query}")
         try:
             if not self.store:
                 logger.error("RAG Search called but store is not initialized")
                 return "Error: RAG system is not available."
-            
-            # Check if collection exists
-            if collection not in self.store.collections:
-                available_collections = list(self.store.collections.keys())
-                return f"Error: Collection '{collection}' not found. Available collections: {available_collections}"
             
             # Process parameters
             topic_list = [t.strip() for t in topics.split(',')] if topics else None
@@ -49,27 +54,46 @@ class RAGSearch:
             limit_map = {"brief": 1, "medium": 3, "detailed": 5}
             limit = limit_map.get(detail_level.lower(), 3)
             
-            logger.info(f"Executing RAG search: query='{rag_query}', collection='{collection}', topics={topic_list}, limit={limit}")
+            # Log search parameters
+            logger.info(
+                f"Executing RAG search: query='{rag_query}'"
+            )
             
-            # Execute search with all enhancements
-            results = self.store.hybrid_retrieve(
+            # Use the new hybrid_search method for more flexible searching
+            results_by_collection = self.store.hybrid_search(
                 query=rag_query,
                 collection_name=collection,
+                collection_title=collection_title,
                 topics=topic_list,
                 limit=limit,
                 rerank=True
             )
             
-            if not results:
+            if not results_by_collection:
                 return "No relevant information found."
             
-            # Format results based on detail level
-            if detail_level.lower() == "brief":
-                return results[0]
+            # Format results
+            formatted_results = []
             
-            # For medium and detailed, join with separators
-            separator = "\n\n" + "-" * 40 + "\n\n"
-            return separator.join(results)
+            for coll_name, results in results_by_collection.items():
+                # Add collection header
+                collection_obj = self.store.collections[coll_name]
+                formatted_results.append(f"## From collection: {collection_obj.title}")
+                
+                # Add results
+                if detail_level.lower() == "brief":
+                    # Just the top result from each collection
+                    formatted_results.append(results[0])
+                else:
+                    # Multiple results
+                    for i, result in enumerate(results):
+                        if detail_level.lower() == "detailed" or i < limit:
+                            formatted_results.append(result)
+                
+                # Add separator between collections
+                formatted_results.append("-" * 60)
+            
+            return "\n\n".join(formatted_results)
             
         except Exception as e:
             error_msg = f"Error searching RAG system: {str(e)}"

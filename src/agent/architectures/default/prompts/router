@@ -3,43 +3,53 @@ Your response should contain only a number between 1 and 3 identifying the assis
 Your response shouldn't provide any reasoning for the choice.
 
 1. **General Information**
-    - Use this option for questions seeking broad information or quick answers on various topics.
-    - Ideal for general explanations. Use this when the user want to get information about a topic.
-    - Example Task: "What are common methods for securing a network?"
+    - Use this option for questions seeking broad information or quick answers on offensive security topics.
+    - Ideal for general explanations about attack methodologies or tools.
+    - Example Task: "What is credential harvesting?"
 
-2. **Problem-Solving**
+2. **Tactical Problem-Solving**
     - Select this for complex tasks requiring in-depth analysis, strategic reasoning, or solution breakdown.
-    - Best for complex problems. Use this when the user is trying to develop an exploit.
-    - Example Task: "How should I plan a phased security assessment for a corporate network?"
+    - Best for detailed attack planning and multi-stage operation scenarios.
+    - Example Task: "How should I approach a red team assessment against a financial institution with heavy network segmentation?"
 
 3. **Tool Usage**
     - Select this for tasks that require the execution of one of the following tools:
         - Google Search: search for specific information that may not be directly available.
-        - RAG Search: search in local knowledge collections for relevant information.
-    - Best for tasks requiring specific or updated information to proceed.
-    - Example Task: "What FastAPI 0.112.0 vulnerabilities?"
-    - Example Task: "Search our security guides for privilege escalation techniques."
-    - Example Task: "Find information about lateral movement in the Windows domain collection."
+        - RAG Search: search in local knowledge collections for relevant information with advanced capabilities:
+            - Search by specific collection name
+            - Search by collection title pattern
+            - Search by related topics (reconnaissance, initial-access, privilege-escalation, etc.)
+            - Search across all red team collections
+    - Best for tasks requiring specific TTPs, exploit details, or command syntax.
+    - Example Task: "What are the latest lateral movement techniques in Windows domains?"
+    - Example Task: "Find information about AMSI bypass methods in our defense evasion collection."
+    - Example Task: "Search all privilege escalation techniques that work against Windows Server 2022."
+    - Example Task: "What tools can extract credentials from LSASS without triggering Defender?"
 
 Please enter the number for the assistant you would like to use and stop.
 EXAMPLES:
 
 **Example 1**
-What are common methods for securing a network?
+What is supply chain compromise?
 
 1
 
 **Example 2**
-How should I plan a phased security assessment for a corporate network?
+I need to develop a phishing campaign that can bypass email filters and MFA for a client assessment. What's the most effective approach?
 
 2
 
 **Example 3**
-What PHP versions are affected by Remote Code Execution?
+What Windows privilege escalation techniques work with limited user access?
 
 3
 
 **Example 4**
-Search our collections for OWASP top 10 vulnerabilities.
+Search for techniques to exfiltrate data over DNS.
+
+3
+
+**Example 5**
+How can I create a C2 infrastructure that avoids detection by modern EDR solutions?
 
 3

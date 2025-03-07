@@ -21,100 +21,111 @@ def initialize_knowledge(vdb: EnhancedStore):
     Already existing Collections will not be overwritten.
     :param vdb: the reference to the Knowledge Base"""
     knowledge_path = Path.home() / '.aiops' / 'knowledge'
-
-    # Create directories if they don't exist
     knowledge_path.mkdir(parents=True, exist_ok=True)
-    
-    # Load collections from JSON files in the knowledge directory
+
+    # Verificar conexión con Qdrant
+    try:
+        qdrant_collections = vdb._connection.get_collections().collections
+        logger.info(f"Colecciones en Qdrant: {[coll.name for coll in qdrant_collections]}")
+    except Exception as e:
+        logger.error(f"Error al conectar con Qdrant: {e}")
+        raise RuntimeError("No se pudo conectar con Qdrant")
+
+    # Cargar colecciones desde JSON locales
     for dataset_file in knowledge_path.glob('*.json'):
         logger.info(f"Found JSON file: {dataset_file}")
         try:
             with open(dataset_file, 'r') as f:
                 dataset_data = json.load(f)
-            collection = Collection.from_dict(dataset_file.stem, dataset_data)
-            if collection.title not in vdb.collections:
+            collection = Collection.from_dict(dataset_data)
+            if not vdb._connection.collection_exists(collection.title):
                 vdb.create_collection(collection, progress_bar=True)
                 save_collection_metadata(collection, knowledge_path)
-                logger.info(f"[+] Created collection '{collection.title}'")
+                logger.info(f"[+] Creada colección '{collection.title}' en Qdrant")
             else:
-                logger.info(f"[+] Collection '{collection.title}' already exists")
+                logger.info(f"[+] La colección '{collection.title}' ya existe en Qdrant")
+                vdb._collections[collection.title] = collection
         except Exception as e:
-            logger.info(f"[!] Error loading dataset {dataset_file}: {e}")
+            logger.error(f"[!] Error loading dataset {dataset_file}: {e}")
 
-    # Synchronize collections existing in Qdrant
-    try:
-        qdrant_collections = vdb._connection.get_collections().collections
-        for qdrant_coll in qdrant_collections:
-            coll_name = qdrant_coll.name
-            
-            # Skip if we already have this collection loaded
-            if coll_name in vdb.collections:
-                continue
-                
-            # Create a new collection object
-            collection = Collection(
-                collection_id=len(vdb._collections) + 1,
-                title=coll_name,
-                documents=[],
-                topics=[],
-                size=0
-            )
-            
-            # Try to retrieve document information from Qdrant
-            try:
-                # Get a sample of points to extract document names and topics
-                points = vdb._connection.scroll(
+    # Sincronizar colecciones desde Qdrant
+    qdrant_collections = vdb._connection.get_collections().collections
+    for qdrant_coll in qdrant_collections:
+        coll_name = qdrant_coll.name
+        if coll_name in vdb.collections:
+            continue
+
+        collection = Collection(
+            collection_id=len(vdb._collections) + 1,
+            title=coll_name,
+            documents=[],
+            topics=[],
+            size=0
+        )
+
+        try:
+            doc_names = set()
+            all_topics = set()
+            scroll_offset = None
+            while True:
+                points, next_offset = vdb._connection.scroll(
                     collection_name=coll_name,
-                    limit=100,  # Get a reasonable sample
+                    limit=100,
+                    offset=scroll_offset,
                     with_payload=True,
                     with_vectors=False
-                )[0]
-                
-                # Extract unique document names and topics
-                doc_names = set()
-                all_topics = set()
-                
+                )
                 for point in points:
                     if 'doc_id' in point.payload:
                         doc_names.add(point.payload['doc_id'])
                     if 'topics' in point.payload and point.payload['topics']:
-                        for topic in point.payload['topics']:
-                            all_topics.add(topic)
-                
-                # Create placeholder documents
-                for doc_name in doc_names:
-                    collection.documents.append(Document(
-                        name=doc_name,
-                        content="",  # Empty content as placeholder
-                        topics=[Topic(t) for t in all_topics],
-                        source_type="text"
-                    ))
-                
-                # Set topics for collection
-                collection.topics = [Topic(t) for t in all_topics]
-                
-                # Set size based on Qdrant count
-                count_result = vdb._connection.count(collection_name=coll_name)
-                collection.size = count_result.count
-                
-                # Add to collections
-                vdb._collections[coll_name] = collection
-                logger.info(f"[+] Reconstructed collection '{coll_name}' from Qdrant with {len(doc_names)} documents")
-                
-                # Save metadata for future
-                save_collection_metadata(collection, knowledge_path)
-                
-            except Exception as e:
-                logger.error(f"Error reconstructing collection '{coll_name}' from Qdrant: {e}")
-                
-    except Exception as e:
-        logger.error(f"[!] Error syncing Qdrant collections: {e}")
-        
+                        all_topics.update(point.payload['topics'])
+                if not next_offset:
+                    break
+                scroll_offset = next_offset
+
+            for doc_name in doc_names:
+                collection.documents.append(Document(
+                    name=doc_name,
+                    content="",
+                    topics=[Topic(t) for t in all_topics],
+                    source_type="text"
+                ))
+
+            count_result = vdb._connection.count(collection_name=coll_name)
+            collection.size = count_result.count
+            collection.topics = [Topic(t) for t in all_topics]
+
+            vdb._collections[coll_name] = collection
+            save_collection_metadata(collection, knowledge_path)
+            logger.info(f"[+] Sincronizada colección '{coll_name}' desde Qdrant con {len(doc_names)} documentos")
+        except Exception as e:
+            logger.error(f"Error sincronizando colección '{coll_name}' desde Qdrant: {e}")
+
+    # Verificar estado de sincronización
+    check_sync_status(vdb)
+
 def save_collection_metadata(collection: Collection, knowledge_path: Path):
     """Guarda los metadatos de una colección en un archivo JSON."""
     metadata_file = knowledge_path / f"{collection.title}.json"
-    with open(metadata_file, 'w') as f:
-        json.dump(collection.to_dict(), f, indent=2)
+    try:
+        with open(metadata_file, 'w') as f:
+            json.dump(collection.to_dict(), f, indent=2)
+        logger.info(f"Metadatos guardados en {metadata_file}")
+    except Exception as e:
+        logger.error(f"Error guardando metadatos de '{collection.title}': {e}")
+
+def check_sync_status(vdb: EnhancedStore):
+    local_collections = list(vdb.collections.keys())
+    qdrant_collections = [coll.name for coll in vdb._connection.get_collections().collections]
+    logger.info(f"Colecciones locales: {local_collections}")
+    logger.info(f"Colecciones en Qdrant: {qdrant_collections}")
+    missing_in_local = set(qdrant_collections) - set(local_collections)
+    missing_in_qdrant = set(local_collections) - set(qdrant_collections)
+    if missing_in_local:
+        logger.warning(f"Colecciones en Qdrant pero no locales: {missing_in_local}")
+    if missing_in_qdrant:
+        logger.warning(f"Colecciones locales pero no en Qdrant: {missing_in_qdrant}")
 
 def load_rag(
         rag_endpoint: str,
