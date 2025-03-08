@@ -99,9 +99,9 @@ class Ollama(Provider):
             options = AVAILABLE_MODELS[base_model]['options']
 
             # Add these lines before your connections
-            print(f"Attempting to connect to Ollama at: {self.inference_endpoint}")
-            print(f"Using model: {self.model}")
-            print(f"Request payload: {json.dumps(messages.model_dump())[:500]}...")
+            logger.debug(f"Attempting to connect to Ollama at: {self.inference_endpoint}")
+            logger.debug(f"Using model: {self.model}")
+            logger.debug(f"Request payload: {json.dumps(messages.model_dump())[:500]}...")
             
             # Log query attempt
             logger.debug(f"Sending query to {self.model} with {len(messages)} messages")

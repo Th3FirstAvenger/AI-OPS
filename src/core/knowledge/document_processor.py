@@ -3,6 +3,7 @@ import re
 import spacy
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
+import logging
 
 # Try to load spaCy model, download if not available
 try:
@@ -14,6 +15,9 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 from src.core.knowledge.collections import Document, Topic
+
+logger = logging.getLogger(__name__)
+
 
 class ChunkInfo:
     """Container for chunk information including text and metadata"""
@@ -78,12 +82,12 @@ class DocumentProcessor:
             if not self.is_in_code_block(m.start(), code_blocks):
                 headers.append((m.start(), m.end()))
         
-        print(f"Detected {len(headers)} headers outside code blocks")
+        logger.debug(f"Detected {len(headers)} headers outside code blocks")
         for i, (start, end) in enumerate(headers):
-            print(f"Header {i+1}: {text[start:end]}")
+            logger.debug(f"Header {i+1}: {text[start:end]}")
         
         if not headers:
-            print("No headers found, returning full text")
+            logger.debug("No headers found, returning full text")
             return [text.strip()] if text.strip() else []
         
         chunks = []
@@ -91,7 +95,7 @@ class DocumentProcessor:
             initial_chunk = text[:headers[0][0]].strip()
             if initial_chunk:
                 chunks.append(initial_chunk)
-                print(f"Initial chunk: {initial_chunk[:100]}...")
+                logger.debug(f"Initial chunk: {initial_chunk[:100]}...")
         
         for i in range(len(headers)):
             start = headers[i][0]
@@ -99,43 +103,9 @@ class DocumentProcessor:
             section = text[start:end].strip()
             if section:
                 chunks.append(section)
-                print(f"Section {i+1}: {section[:100]}...")
+                logger.debug(f"Section {i+1}: {section[:100]}...")
         
         return chunks
-
-    # def _chunk_markdown(self, text: str) -> list[str]:
-        """Divides text into complete sections based on Markdown headers."""
-        """# Updated regex: matches # to ###### with optional space
-        header_pattern = r'(^#{1,6}\s?.*$)'
-        headers = [(m.start(), m.end()) for m in re.finditer(header_pattern, text, re.MULTILINE)]
-        
-        # Debugging: Log detected headers
-        print(f"Detected {len(headers)} headers")
-        for i, (start, end) in enumerate(headers):
-            print(f"Header {i+1}: {text[start:end]}")
-        
-        if not headers:
-            print("No headers found, returning full text")
-            return [text.strip()] if text.strip() else []
-        
-        chunks = []
-        # Capture text before the first header
-        if headers[0][0] > 0:
-            initial_chunk = text[:headers[0][0]].strip()
-            if initial_chunk:
-                chunks.append(initial_chunk)
-                print(f"Initial chunk: {initial_chunk[:100]}...")
-        
-        # Split into sections
-        for i in range(len(headers)):
-            start = headers[i][0]
-            end = headers[i + 1][0] if i + 1 < len(headers) else len(text)
-            section = text[start:end].strip()
-            if section:  # Only add non-empty sections
-                chunks.append(section)
-                print(f"Section {i+1}: {section[:100]}...")
-        
-        return chunks"""
 
     def _chunk_text_plain(self, text: str) -> list[str]:
         """Splits plain text as before (example with sentences)."""

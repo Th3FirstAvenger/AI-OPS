@@ -235,14 +235,14 @@ class CollectionBM25Index:
     def load_collection_index(self, collection_name: str, base_path: str or Path):
         path = Path(base_path) / f"{collection_name}.json"
         if not path.exists():
-            print(f"Advertencia: No se encontró el archivo de índice BM25 para {collection_name} en {path}")
+            logger.debug(f"Warning: BM25 index file for {collection_name} not found at {path}")
             return False
         try:
             self.collection_indexes[collection_name] = BM25Index.load_from_disk(path)
             return True
         except json.JSONDecodeError as e:
-            print(f"Error: El archivo JSON de {collection_name} es inválido: {e}")
+            logger.debug(f"Error: The JSON file for {collection_name} is invalid: {e}")
             return False
         except Exception as e:
-            print(f"Error inesperado al cargar el índice BM25 de {collection_name}: {e}")
+            logger.debug(f"Unexpected error loading BM25 index for {collection_name}: {e}")
             return False
