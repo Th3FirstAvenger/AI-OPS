@@ -1,0 +1,1 @@
+save on testing data on ~/.aiops/knowledge/

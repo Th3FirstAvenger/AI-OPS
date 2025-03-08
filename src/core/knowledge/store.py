@@ -115,7 +115,7 @@ class EnhancedStore:
             raise ProviderError("Can't load embedding model") from err
         
         # Initialize document processor
-        self.document_processor = DocumentProcessor()
+        self.document_processor = DocumentProcessor(max_chunk_size=2000, min_chunk_size=500)
         
         # Initialize BM25 index manager
         self.bm25_index = CollectionBM25Index()

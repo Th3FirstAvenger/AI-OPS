@@ -49,12 +49,72 @@ class DocumentProcessor:
     def __init__(self, max_chunk_size: int = 500, min_chunk_size: int = 200):
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
+
+
+    def _chunk_markdown(self, text: str) -> list[str]:
+        """Divides text into complete sections based on Markdown headers."""
+        # Updated regex: matches # to ###### with optional space
+        header_pattern = r'(^#{1,6}\s?.*$)'
+        headers = [(m.start(), m.end()) for m in re.finditer(header_pattern, text, re.MULTILINE)]
+        
+        # Debugging: Log detected headers
+        print(f"Detected {len(headers)} headers")
+        for i, (start, end) in enumerate(headers):
+            print(f"Header {i+1}: {text[start:end]}")
+        
+        if not headers:
+            print("No headers found, returning full text")
+            return [text.strip()] if text.strip() else []
+        
+        chunks = []
+        # Capture text before the first header
+        if headers[0][0] > 0:
+            initial_chunk = text[:headers[0][0]].strip()
+            if initial_chunk:
+                chunks.append(initial_chunk)
+                print(f"Initial chunk: {initial_chunk[:100]}...")
+        
+        # Split into sections
+        for i in range(len(headers)):
+            start = headers[i][0]
+            end = headers[i + 1][0] if i + 1 < len(headers) else len(text)
+            section = text[start:end].strip()
+            if section:  # Only add non-empty sections
+                chunks.append(section)
+                print(f"Section {i+1}: {section[:100]}...")
+        
+        return chunks
+
+    def _chunk_text_plain(self, text: str) -> list[str]:
+        """Splits plain text as before (example with sentences)."""
+        # Here would go your original logic, for example:
+        chunks = []
+        current_chunk = ""
+        sentences = text.split('. ')  # Assuming splitting by sentences
+        
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) > self.max_chunk_size and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk += (". " + sentence if current_chunk else sentence)
+        
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        return chunks
+    
+    def _chunk_text(self, text: str, source_type: str) -> list[str]:
+        """Divides text into fragments based on source_type."""
+        if source_type == "markdown":
+            return self._chunk_markdown(text)
+        else:
+            return self._chunk_text_plain(text)
     
     def process_document(self, document: Document) -> List[ChunkInfo]:
         """Process a document into chunks with metadata"""
         # Select chunking strategy based on document type
-        chunks = self._chunk_text(document.content)
-    
+        chunks = self._chunk_text(document.content, document.source_type)
+        
         # Create ChunkInfo objects with metadata
         chunk_infos = []
         for i, chunk_text in enumerate(chunks):
@@ -68,45 +128,6 @@ class DocumentProcessor:
         
         return chunk_infos
         
-    
-    def _chunk_text(self, text: str) -> List[str]:
-        """Chunk text using spaCy's sentence boundaries with smart merging"""
-        # Process the text with spaCy to get sentence boundaries
-        doc = nlp(text)
-        sentences = list(doc.sents)
-        
-        # Initialize chunks
-        chunks = []
-        current_chunk = ""
-        
-        # Process each sentence
-        for sentence in sentences:
-            sentence_text = sentence.text.strip()
-            
-            # Skip empty sentences
-            if not sentence_text:
-                continue
-            
-            # If adding this sentence would exceed chunk size and we already have content,
-            # start a new chunk
-            if len(current_chunk) + len(sentence_text) > self.max_chunk_size and current_chunk:
-                chunks.append(current_chunk.strip())
-                
-                # Start new chunk with overlap
-                overlap_start = max(0, len(current_chunk) - self.min_chunk_size)
-                current_chunk = current_chunk[overlap_start:] + " " + sentence_text
-            else:
-                # Add to current chunk
-                if current_chunk:
-                    current_chunk += " " + sentence_text
-                else:
-                    current_chunk = sentence_text
-        
-        # Add the last chunk if it has content
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
-        
-        return chunks
 
 
     @staticmethod

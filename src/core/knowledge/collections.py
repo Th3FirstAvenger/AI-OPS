@@ -167,14 +167,20 @@ class Collection:
             topics_data = item.get('topics', [])
             if isinstance(topics_data, list):
                 topics = [Topic(topic) for topic in topics_data]
-                all_topics.update(topics_data)  # Add topics to global set
+                all_topics.update(topics_data)
             else:
                 topics = [Topic(topics_data)]
                 all_topics.add(topics_data)
             
-            # Extract metadata, excluding known fields
-            metadata = {k: v for k, v in item.items() if k not in ['name', 'content', 'topics', 'source_type']}
-            
+            # Extract and flatten metadata
+            metadata = {}
+            for k, v in item.items():
+                if k not in ['name', 'content', 'topics', 'source_type']:
+                    if k == 'metadata' and isinstance(v, dict):
+                        metadata.update(v)  # Fusiona el metadata anidado
+                    else:
+                        metadata[k] = v
+
             # Create document and add to list
             documents.append(Document(
                 name=name,

@@ -22,11 +22,37 @@ RULES:
   * You can use 'topics' to search in collections related to specific topics
   * If you specify none, all available collections will be searched
 
+AVAILABLE TOPICS:
+The following are the main topics you can use to search within our collections:
+
+- initial-access: Initial access techniques and phishing methods
+- reconnaissance: OSINT, passive and active information gathering
+- credential-access: Password dumping, cracking, and credential theft
+- execution: Command execution techniques and payload delivery
+- privilege-escalation: Local and domain privilege escalation methods
+- defense-evasion: AV/EDR bypass and detection avoidance
+- persistence: Maintaining access, backdoors, and implants
+- lateral-movement: Moving through the network after initial access
+- collection: Data harvesting and exfiltration methods
+- command-control: C2 frameworks and communication techniques
+- infrastructure: Red team infrastructure and operational setup
+- social-engineering: Human exploitation and manipulation tactics
+- web-exploitation: Web application vulnerabilities and attacks
+- network-exploitation: Network service vulnerabilities and attacks
+- active-directory: AD abuse and domain exploitation
+- cloud-exploitation: Attacking cloud environments (AWS, Azure, GCP)
+- wireless-exploitation: Attacking wireless networks and protocols
+- physical: Physical security bypass and hardware attacks
+
+You can combine multiple topics separated by commas, for example: "topics=privilege-escalation,defense-evasion,persistence"
+
 Available tools:
 - {"type": "function", "function": {"name": "search_web", "parameters": {"type": "object", "properties": {"search_query": {"type": "string"}}, "required": ["search_query"]}, "description": "Make a search with Google."}}
 - {"type": "function", "function": {"name": "search_rag", "parameters": {"type": "object", "properties": {"rag_query": {"type": "string"}, "collection": {"type": "string"}, "topics": {"type": "string"}, "collection_title": {"type": "string"}, "detail_level": {"type": "string", "enum": ["brief", "medium", "detailed"]}}, "required": ["rag_query"]}, "description": "Search documents in the RAG Vector Database."}}
 
 Expected format:
 {"name": "function_name", "parameters": {"param1": "value1", ...}}
+
+REMEMBER: Respond ONLY with a single JSON tool call. No explanations, no additional text.
 
 User query: {user_query}
