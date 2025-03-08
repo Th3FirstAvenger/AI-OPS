@@ -157,8 +157,8 @@ class NeuralReranker:
         
         # Default model names by provider
         self.default_models = {
-            "huggingface": "qllama/bge-reranker-large",
-            "ollama": "nomic-embed-text"
+            "huggingface": "nomic-embed-text",
+            "ollama": "qllama/bge-reranker-large"
         }
         
         # Use default model if none provided

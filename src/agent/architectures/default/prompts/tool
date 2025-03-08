@@ -48,3 +48,11 @@ Available tools:
 REMEMBER: Respond ONLY with a single JSON tool call. No explanations, no additional text.
 
 User query: {user_query}
+
+# Example 1
+User: Hi
+Response: {}
+
+# Example 2
+User: What are some effective Active Directory enumeration techniques?
+Response: {"name": "search_rag", "parameters": {"rag_query": "Active Directory enumeration techniques", "topics": "active-directory,reconnaissance,lateral-movement"}}

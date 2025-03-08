@@ -50,10 +50,62 @@ class DocumentProcessor:
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
 
+    def get_code_blocks(self,text: str) -> list[tuple[int, int]]:
+        """Returns a list of (start, end) indexes for code blocks (using triple backticks or <pre><code> tags)."""
+        code_blocks = []
+        # Regex para bloques de código con triple backticks
+        for m in re.finditer(r'```.*?```', text, re.DOTALL):
+            code_blocks.append((m.start(), m.end()))
+        # Regex para bloques de código en HTML (<pre><code> ... </code></pre>)
+        for m in re.finditer(r'<pre><code.*?>.*?</code></pre>', text, re.DOTALL):
+            code_blocks.append((m.start(), m.end()))
+        return code_blocks
+
+    def is_in_code_block(self,pos: int, code_blocks: list[tuple[int, int]]) -> bool:
+        """Returns True if pos is inside any of the code block ranges."""
+        for start, end in code_blocks:
+            if start <= pos < end:
+                return True
+        return False
 
     def _chunk_markdown(self, text: str) -> list[str]:
+        """Divides text into complete sections based on Markdown headers, ignoring headers inside code blocks."""
+        code_blocks = self.get_code_blocks(text)
+        header_pattern = r'(^#{1,6}\s?.*$)'
+        headers = []
+        for m in re.finditer(header_pattern, text, re.MULTILINE):
+            # Solo agrega el header si no está dentro de un bloque de código
+            if not self.is_in_code_block(m.start(), code_blocks):
+                headers.append((m.start(), m.end()))
+        
+        print(f"Detected {len(headers)} headers outside code blocks")
+        for i, (start, end) in enumerate(headers):
+            print(f"Header {i+1}: {text[start:end]}")
+        
+        if not headers:
+            print("No headers found, returning full text")
+            return [text.strip()] if text.strip() else []
+        
+        chunks = []
+        if headers[0][0] > 0:
+            initial_chunk = text[:headers[0][0]].strip()
+            if initial_chunk:
+                chunks.append(initial_chunk)
+                print(f"Initial chunk: {initial_chunk[:100]}...")
+        
+        for i in range(len(headers)):
+            start = headers[i][0]
+            end = headers[i + 1][0] if i + 1 < len(headers) else len(text)
+            section = text[start:end].strip()
+            if section:
+                chunks.append(section)
+                print(f"Section {i+1}: {section[:100]}...")
+        
+        return chunks
+
+    # def _chunk_markdown(self, text: str) -> list[str]:
         """Divides text into complete sections based on Markdown headers."""
-        # Updated regex: matches # to ###### with optional space
+        """# Updated regex: matches # to ###### with optional space
         header_pattern = r'(^#{1,6}\s?.*$)'
         headers = [(m.start(), m.end()) for m in re.finditer(header_pattern, text, re.MULTILINE)]
         
@@ -83,7 +135,7 @@ class DocumentProcessor:
                 chunks.append(section)
                 print(f"Section {i+1}: {section[:100]}...")
         
-        return chunks
+        return chunks"""
 
     def _chunk_text_plain(self, text: str) -> list[str]:
         """Splits plain text as before (example with sentences)."""

@@ -151,7 +151,7 @@ class DefaultArchitecture(AgentArchitecture):
         match = re.search(r'[1-3](?=[^\d]*$)', assistant_index_buffer)
         if match:
             index = int(match.group(0))
-            logger.debug(f"Extracted assistant index: {index} from response: {assistant_index_buffer}")
+            logger.debug(f"Extracted assistant index: {index} from response: {assistant_index_buffer[:100]}")
             return index
         
         # Si no se encuentra un número válido, loguear el error y devolver 1 por defecto
@@ -187,6 +187,14 @@ class DefaultArchitecture(AgentArchitecture):
         if assistant_index == 2:
             prompt = self.__prompts['reasoning']
         elif assistant_index == 3:
+
+            # Check if the query should be handled directly with RAG (Retrieval Augmented Generation)
+            if self.__should_use_direct_rag(user_input):
+                logger.info("Handling query directly with RAG")
+                # Process the query using RAG and yield results incrementally
+                for chunk in self.__handle_direct_rag_query(session_id, user_input):
+                    yield chunk 
+                return
             tool_call_result = None
             tool_call_str = None
             logger.info(f"Executing tool call for query: {user_input}")
@@ -282,22 +290,40 @@ class DefaultArchitecture(AgentArchitecture):
         topic_str = ",".join(topics) if topics else None
         
         logger.info(f"Executing direct RAG search with topics: {topic_str}")
-        
+
         try:
             # Execute RAG search directly
             rag_result = RAG_SEARCH.run(
-                rag_query=user_input,
-                collection=None,
-                topics=topic_str,
-                collection_title=None,
-                detail_level="detailed"
+                    rag_query=user_input,
+                    collection=None,
+                    topics=topic_str,
+                    collection_title=None,
+                    detail_level="detailed"
+                )
+            
+            context = rag_result
+            prompt = (
+                f"""Based solely on the provided documentation, answer the user's question. 
+                    - Explicitly indicate what information comes from the documentation with the label **Documentation Information**.
+                    - If the documentation doesn't fully cover the question, use the label **Missing Information** to point out which aspects aren't covered.
+                    - Don't add additional information or inferences based on your general knowledge; stick to what's in the documentation.
+                    - Include all relevant details such as:
+                        * Theoretical concepts
+                        * Practical commands or steps
+                        * Mitigations or countermeasures
+                        * Technical specifications
+                        * Real-world examples (if present in docs)
+
+                Context:\n{context}\n\n
+                Question: {user_input}"""
             )
             
             # Add user message to conversation
             conversation = self.memory[session_id]
+            conversation.messages[0] = Message(role=Role.SYS, content=prompt)
             conversation += Message(role=Role.USER, content=user_input)
             
-            # Format response with RAG results and yield it
+            """# Format response with RAG results and yield it
             intro_text = "Based on my research, I've found the following information relevant to your query:\n\n"
             yield intro_text
             
@@ -312,7 +338,45 @@ class DefaultArchitecture(AgentArchitecture):
             # Save the complete response to the conversation
             complete_response = intro_text + formatted_result + conclusion
             conversation += Message(role=Role.ASSISTANT, content=complete_response)
-            
+            """
+            initial_response = ""
+            try:
+                for chunk, _, _ in self.llm.query(conversation):
+                    initial_response += chunk
+                    yield chunk
+
+                validation_prompt = (
+                    "Review the following response and determine if it fully answers the user's question "
+                    "based on the provided documentation. If relevant information is missing, indicate which "
+                    "aspects are not covered.\n\n"
+                    f"Response: {initial_response}\n\n"
+                    f"Question: {user_input}\n\n"
+                    f"Documentation: {rag_result}"                    
+                )
+
+                validation_conversation = Conversation(name="validation")
+                validation_conversation += Message(role=Role.SYS, content=validation_prompt)
+                
+                validation_result = ""
+                for chunk, _, _ in self.llm.query(validation_conversation):
+                    validation_result += chunk
+
+                if "missing information" in validation_result.lower() or "not covered" in validation_result.lower():
+                    yield "\n\nExpanding the response with more details...\n"
+                    enhanced_prompt = (
+                        f"{prompt}\n\nNote: The previous response was incomplete. Please ensure to include all "
+                        "relevant details, such as practical commands or mitigations, according to the documentation."
+                    )
+                    conversation.messages[0] = Message(role=Role.SYS, content=enhanced_prompt)
+                    for chunk, _, _ in self.llm.query(conversation):
+                        yield chunk
+                        initial_response += chunk
+                
+                conversation += Message(role=Role.ASSISTANT, content=initial_response)
+            except Exception as e:
+                logger.error(f"Error during response validation: {str(e)}")
+                conversation += Message(role=Role.ASSISTANT, content=initial_response)
+                    
         except Exception as e:
             logger.error(f"Error in direct RAG query: {str(e)}")
             error_msg = "I apologize, but I encountered an issue while searching our knowledge base. "
@@ -333,6 +397,48 @@ class DefaultArchitecture(AgentArchitecture):
                     yield chunk
             
             conversation += Message(role=Role.ASSISTANT, content=error_msg + fallback_response)
+    
+    def __extract_topics_with_llm(self, query: str) -> List[str]:
+        """Use un LLM para extraer temas relevantes de ciberseguridad de la consulta."""
+        # temp prompt
+        prompt = f"""Identify the relevant cybersecurity topics for the query: '{query}'. 
+        AVAILABLE TOPICS:
+        The following are the main topics you can use to search within our collections:
+
+        - initial-access: Initial access techniques and phishing methods
+        - reconnaissance: OSINT, passive and active information gathering
+        - credential-access: Password dumping, cracking, and credential theft
+        - execution: Command execution techniques and payload delivery
+        - privilege-escalation: Local and domain privilege escalation methods
+        - defense-evasion: AV/EDR bypass and detection avoidance
+        - persistence: Maintaining access, backdoors, and implants
+        - lateral-movement: Moving through the network after initial access
+        - collection: Data harvesting and exfiltration methods
+        - command-control: C2 frameworks and communication techniques
+        - infrastructure: Red team infrastructure and operational setup
+        - social-engineering: Human exploitation and manipulation tactics
+        - web-exploitation: Web application vulnerabilities and attacks
+        - network-exploitation: Network service vulnerabilities and attacks
+        - active-directory: AD abuse and domain exploitation
+        - cloud-exploitation: Attacking cloud environments (AWS, Azure, GCP)
+        - wireless-exploitation: Attacking wireless networks and protocols
+        - physical: Physical security bypass and hardware attacks
+
+        Remember just i want to know the topics, not the answer.
+
+        You can combine multiple topics separated by commas, for example: privilege-escalation,defense-evasion,persistence"""
+
+        conversation = Conversation(
+            name="topic_extraction", 
+            messages=[Message(role=Role.SYS, content=prompt)]
+        )
+        response_chunks = []
+        for chunk, _, _ in self.llm.query(conversation):
+            if chunk:
+                response_chunks.append(chunk)
+        response = ''.join(response_chunks)
+        logger.info(f"Topics extracted from LLM: {response}")
+        return response.split(", ")
 
     def __extract_relevant_topics(self, query: str) -> List[str]:
         """Extract relevant topics from the query for RAG search."""
@@ -343,6 +449,7 @@ class DefaultArchitecture(AgentArchitecture):
         topic_mappings = {
             "active directory": ["active-directory", "domain-controllers"],
             "kerberos": ["active-directory", "kerberos", "authentication"],
+            "kerberoasting": ["active-directory", "kerberos", "credential-access", "privilege-escalation"],
             "sql": ["web-exploitation", "injection", "database"],
             "web": ["web-exploitation", "injection"],
             "password": ["credential-access", "authentication"],
@@ -369,6 +476,9 @@ class DefaultArchitecture(AgentArchitecture):
         for keyword, related_topics in topic_mappings.items():
             if keyword in query_lower:
                 topics.extend(related_topics)
+        
+        if not topics:
+            topics = self.__extract_topics_with_llm(query)
         
         # Remove duplicates
         return list(set(topics))
@@ -418,7 +528,7 @@ class DefaultArchitecture(AgentArchitecture):
         for chunk, _, _ in self.llm.query(conversation):
             tool_call_response += chunk
         
-        logger.info(f"Tool call response: {tool_call_response[:200]}...")
+        logger.debug(f"Tool call response: {tool_call_response}...")
         
         # Restore original conversation state
         conversation.messages.pop()  # Remove the user message we added
@@ -478,7 +588,7 @@ class DefaultArchitecture(AgentArchitecture):
         
     def __extract_tool_call(self, tool_call_response: str) -> Tuple[str | None, Dict, str | None]:
         """Extracts the tool call and its parameters from the model's response."""
-        logger.info(f"Attempting to extract tool call from response: {tool_call_response[:200]}...")
+        logger.info(f"Attempting to extract tool call from response: {tool_call_response}...")
         
         # Search for a JSON block containing "name" and "parameters"
         json_pattern = r'\{.*"name".*"parameters".*\}'

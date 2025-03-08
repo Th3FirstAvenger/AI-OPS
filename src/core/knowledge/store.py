@@ -189,6 +189,38 @@ class EnhancedStore:
         logger.info(f"Collection '{collection.title}' created successfully with {document_count} documents")
         return collection.title
 
+    def retrieve_related_chunks(self, doc_id: str, collection_name: str, limit: int = 10) -> List[Dict]:
+        """
+        Recupera todos los fragmentos relacionados con un doc_id específico en una colección.
+        
+        Args:
+            doc_id: Identificador del documento.
+            collection_name: Nombre de la colección en Qdrant.
+            limit: Número máximo de fragmentos a recuperar.
+        
+        Returns:
+            Lista de diccionarios con la información de los fragmentos.
+        """
+        filter_obj = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="doc_id",
+                    match=models.MatchValue(value=doc_id)
+                )
+            ]
+        )
+        
+        hits = self._connection.search(
+            collection_name=collection_name,
+            query_vector=[0] * self._embedding_size,  # Vector dummy, ya que filtramos por payload
+            query_filter=filter_obj,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        return [hit.payload for hit in hits]
+
     def hybrid_retrieve(
         self,
         query: str,
@@ -198,7 +230,7 @@ class EnhancedStore:
         vector_weight: float = 0.7,
         limit: int = 5,
         rerank: bool = True
-    ) -> List[str]:
+    ) -> List[Dict]:
         """
         Perform hybrid retrieval combining BM25 and vector search with optional reranking.
         
@@ -292,8 +324,9 @@ class EnhancedStore:
                 final_results = combined_results[:limit]
             
             # Extract text from final results
-            results = [result['text'] for result in final_results]
-            
+            # results = [result['text'] for result in final_results]
+            results = final_results
+
             # Update cache
             self.result_cache[cache_key] = {
                 'timestamp': current_time,
@@ -344,7 +377,7 @@ class EnhancedStore:
             collection_name=collection_name,
             query_vector=query_vector,
             limit=limit,
-            score_threshold=0.0,  # We'll filter by score later
+            score_threshold=0.0, 
             query_filter=filter_obj
         )
         
@@ -354,6 +387,7 @@ class EnhancedStore:
                 {
                     'text': point.payload['text'],
                     'doc_id': point.payload['doc_id'],
+                    'doc_name': point.payload.get('doc_name', ''),
                     'chunk_id': point.payload.get('chunk_id', 0),
                     'topics': point.payload.get('topics', []),
                     'metadata': point.payload.get('metadata', {})
@@ -404,6 +438,7 @@ class EnhancedStore:
                 unified_results[key] = {
                     'text': chunk_dict['text'],
                     'doc_id': chunk_dict['doc_id'],
+                    'doc_name': chunk_dict.get('doc_name', ''),
                     'chunk_id': chunk_dict['chunk_id'],
                     'topics': chunk_dict.get('topics', []),
                     'metadata': chunk_dict.get('metadata', {}),
@@ -415,6 +450,8 @@ class EnhancedStore:
         # Convert to list and sort by combined score
         results_list = list(unified_results.values())
         results_list.sort(key=lambda x: x['combined_score'], reverse=True)
+
+        logger.debug(f"Combined results: {results_list}")
         
         return results_list[:limit]
 
@@ -806,12 +843,22 @@ class EnhancedStore:
                         topics=topics,
                         bm25_weight=bm25_weight,
                         vector_weight=vector_weight,
-                        limit=limit,
+                        limit=limit * 3,
                         rerank=rerank
                     )
+                    expanded_results = []
+                    seen_doc_ids = set()
+                    for result in coll_results[:limit]:  
+                        doc_id = result['doc_id']
+                        logger.debug(f"Result type: {type(result)}")
+                        if doc_id not in seen_doc_ids:
+                            related_chunks = self.retrieve_related_chunks(doc_id, coll_name, limit=10)
+                            expanded_results.extend([chunk['text'] for chunk in related_chunks])
+                            seen_doc_ids.add(doc_id)
                     
-                    if coll_results:
-                        results[coll_name] = coll_results
+                    if expanded_results:
+                        results[coll_name] = expanded_results[:limit] 
+
                 except Exception as e:
                     logger.error(f"Error searching collection '{coll_name}': {e}")
                     continue

@@ -47,10 +47,12 @@ if AGENT_SETTINGS.USE_RAG:
             reranker_confidence=RAG_SETTINGS.RERANKER_CONFIDENCE
         )
         
-        logging.info("RAG system initialized successfully. Available collections:")
+        logging.info("RAG system initialized successfully. Available collections with id:")
         for cname, coll in store.collections.items():
             doc_topics = ", ".join([topic.name for topic in coll.topics])
-            logging.info(f"- '{cname}': {doc_topics}")
+            logging.info(f"- '{cname}': {doc_topics} :: {coll.collection_id}" )
+            
+            
 
         # Pass the store reference to the RAG_SEARCH tool
         RAG_SEARCH.set_store(store)
