@@ -90,18 +90,18 @@ class AgentClient:
             'save': self.save_session,
             'delete': self.delete_session,
             'rename': self.rename_session,
-            'list sessions': self.list_sessions,
+            'list_sessions': self.list_sessions,
             'load': self.load_session,
             
 
             # RAG is disabled in the current version
-            'list collections': self.__list_collections,
-            'create collection': self.__create_collection,
-            'upload document': self.__upload_document,
-            'maintain collection': self.__maintain_collection,
+            'list_collections': self.__list_collections,
+            'create_collection': self.__create_collection,
+            'upload_document': self.__upload_document,
+            'maintain_collection': self.__maintain_collection,
 
             # Add new command to toggle thinking
-            'toggle thinking': self.toggle_thinking,
+            'toggle_thinking': self.toggle_thinking,
         }
 
         self.console.print("[bold blue]ai-ops-cli[/] (beta) starting.")
@@ -577,7 +577,7 @@ class AgentClient:
         self.console.print("\n[bold white]Agent Related[/]")
         self.console.print("- [bold blue]chat[/]   : Open chat with the agent.")
         self.console.print("- [bold blue]back[/]   : Exit chat")
-        self.console.print("- [bold blue]toggle thinking[/] : Toggle thinking mode")
+        self.console.print("- [bold blue]toggle_thinking[/] : Toggle thinking mode")
 
         # Session Related
         self.console.print("\n[bold white]Session Related[/]")
@@ -586,14 +586,14 @@ class AgentClient:
         self.console.print("- [bold blue]load[/]            : Opens a session.")
         self.console.print("- [bold blue]delete[/]          : Delete the current session from persistent sessions.")
         self.console.print("- [bold blue]rename[/]          : Rename the current session.")
-        self.console.print("- [bold blue]list sessions[/]   : Show the saved sessions.")        
+        self.console.print("- [bold blue]list_sessions[/]   : Show the saved sessions.")        
 
         # RAG Related
         self.console.print("\n[bold white]RAG Related[/]")
-        self.console.print("- [bold blue]list collections[/]  : Lists all collections in RAG.")
-        self.console.print("- [bold blue]create collection[/] : Upload a collection to RAG.")
-        self.console.print("- [bold blue]upload document[/]   : Upload a document to a collection.")
-        self.console.print("- [bold blue]maintain collection[/]: Perform maintenance on a collection.")
+        self.console.print("- [bold blue]list_collections[/]  : Lists all collections in RAG.")
+        self.console.print("- [bold blue]create_collection[/] : Upload a collection to RAG.")
+        self.console.print("- [bold blue]upload_document[/]   : Upload a document to a collection.")
+        self.console.print("- [bold blue]maintain_collection[/]: Perform maintenance on a collection.")
 
         self.console.print("\n")
 
