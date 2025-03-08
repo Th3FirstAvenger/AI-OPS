@@ -23,15 +23,15 @@ def initialize_knowledge(vdb: EnhancedStore):
     knowledge_path = Path.home() / '.aiops' / 'knowledge'
     knowledge_path.mkdir(parents=True, exist_ok=True)
 
-    # Verificar conexión con Qdrant
+    # Check Qdrant connection
     try:
         qdrant_collections = vdb._connection.get_collections().collections
-        logger.info(f"Colecciones en Qdrant: {[coll.name for coll in qdrant_collections]}")
+        logger.info(f"Collections in Qdrant: {[coll.name for coll in qdrant_collections]}")
     except Exception as e:
-        logger.error(f"Error al conectar con Qdrant: {e}")
-        raise RuntimeError("No se pudo conectar con Qdrant")
+        logger.error(f"Error connecting to Qdrant: {e}")
+        raise RuntimeError("Could not connect to Qdrant")
 
-    # Cargar colecciones desde JSON locales
+    # Load collections from local JSON files
     for dataset_file in knowledge_path.glob('*.json'):
         logger.info(f"Found JSON file: {dataset_file}")
         try:
@@ -41,14 +41,14 @@ def initialize_knowledge(vdb: EnhancedStore):
             if not vdb._connection.collection_exists(collection.title):
                 vdb.create_collection(collection, progress_bar=True)
                 save_collection_metadata(collection, knowledge_path)
-                logger.info(f"[+] Creada colección '{collection.title}' en Qdrant")
+                logger.info(f"[+] Created collection '{collection.title}' in Qdrant")
             else:
-                logger.info(f"[+] La colección '{collection.title}' ya existe en Qdrant")
+                logger.info(f"[+] Collection '{collection.title}' already exists in Qdrant")
                 vdb._collections[collection.title] = collection
         except Exception as e:
             logger.error(f"[!] Error loading dataset {dataset_file}: {e}")
 
-    # Sincronizar colecciones desde Qdrant
+    # Synchronize collections from Qdrant
     qdrant_collections = vdb._connection.get_collections().collections
     for qdrant_coll in qdrant_collections:
         coll_name = qdrant_coll.name
@@ -98,34 +98,34 @@ def initialize_knowledge(vdb: EnhancedStore):
 
             vdb._collections[coll_name] = collection
             save_collection_metadata(collection, knowledge_path)
-            logger.info(f"[+] Sincronizada colección '{coll_name}' desde Qdrant con {len(doc_names)} documentos")
+            logger.info(f"[+] Synchronized collection '{coll_name}' from Qdrant with {len(doc_names)} documents")
         except Exception as e:
-            logger.error(f"Error sincronizando colección '{coll_name}' desde Qdrant: {e}")
+            logger.error(f"Error synchronizing collection '{coll_name}' from Qdrant: {e}")
 
-    # Verificar estado de sincronización
+    # Check synchronization status
     check_sync_status(vdb)
 
 def save_collection_metadata(collection: Collection, knowledge_path: Path):
-    """Guarda los metadatos de una colección en un archivo JSON."""
+    """Saves collection metadata to a JSON file."""
     metadata_file = knowledge_path / f"{collection.title}.json"
     try:
         with open(metadata_file, 'w') as f:
             json.dump(collection.to_dict(), f, indent=2)
-        logger.info(f"Metadatos guardados en {metadata_file}")
+        logger.info(f"Metadata saved to {metadata_file}")
     except Exception as e:
-        logger.error(f"Error guardando metadatos de '{collection.title}': {e}")
+        logger.error(f"Error saving metadata for '{collection.title}': {e}")
 
 def check_sync_status(vdb: EnhancedStore):
     local_collections = list(vdb.collections.keys())
     qdrant_collections = [coll.name for coll in vdb._connection.get_collections().collections]
-    logger.info(f"Colecciones locales: {local_collections}")
-    logger.info(f"Colecciones en Qdrant: {qdrant_collections}")
+    logger.info(f"Local collections: {local_collections}")
+    logger.info(f"Collections in Qdrant: {qdrant_collections}")
     missing_in_local = set(qdrant_collections) - set(local_collections)
     missing_in_qdrant = set(local_collections) - set(qdrant_collections)
     if missing_in_local:
-        logger.warning(f"Colecciones en Qdrant pero no locales: {missing_in_local}")
+        logger.warning(f"Collections in Qdrant but not local: {missing_in_local}")
     if missing_in_qdrant:
-        logger.warning(f"Colecciones locales pero no en Qdrant: {missing_in_qdrant}")
+        logger.warning(f"Local collections but not in Qdrant: {missing_in_qdrant}")
 
 def load_rag(
         rag_endpoint: str,
@@ -153,8 +153,10 @@ def load_rag(
     )
 
     initialize_knowledge(store)
+    logger.info(f"RAG initialized with {len(store.collections)} collections")
     available_documents = ''
     for cname, coll in store.collections.items():
+        logger.info(f"- '{cname}': {', '.join([topic.name for topic in coll.topics])}")
         doc_topics = ", ".join([topic.name for topic in coll.topics])
         available_documents += f"- '{cname}': {doc_topics}\n"
     

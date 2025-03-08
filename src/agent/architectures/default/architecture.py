@@ -1,7 +1,7 @@
 import re
 import json
 import logging
-from typing import Generator, Dict, Tuple
+from typing import Generator, Dict, Tuple, List
 
 from tool_parse import ToolRegistry
 
@@ -94,7 +94,8 @@ class DefaultArchitecture(AgentArchitecture):
         }
 
         self.__thought_parser: State = State()
-        self.__tool_pattern = r"\s*({[^}]*(?:{[^}]*})*[^}]*}|\[[^\]]*(?:\[[^\]]*\])*[^\]]*\])\s*$"
+        self.__tool_pattern = r'(?:{"name"|name).*"parameters".*}'
+
         tool_names = ', '.join([
             tool["function"]["name"]
             for tool in self.__tools
@@ -117,6 +118,46 @@ class DefaultArchitecture(AgentArchitecture):
         self.token_logger.setLevel(logging.DEBUG)
         self.token_logger.addHandler(logger_handler)
 
+    def new_session(self, session_id: int, name: str):
+        """Create a new conversation if not exists"""
+        if session_id not in self.memory:
+            self.memory[session_id] = Conversation(name=name)
+        self.memory[session_id] += Message(
+            role=Role.SYS,
+            content=self.__prompts['general']
+        )
+
+
+    def _get_assistant_index(self, user_input: str) -> int:
+        """Determine assistant index based on user input
+
+        :param user_input: The user's input query.
+        :return: An index to choose the proper prompt.
+        """
+        route_messages = Conversation(
+            name='get_assistant_index',
+            messages=[
+                {'role': 'system', 'content': self.__prompts['router']},
+                {'role': 'user', 'content': user_input}
+            ]
+        )
+        assistant_index_buffer = ''
+        for chunk, _, _ in self.llm.query(route_messages):
+            if not chunk:
+                break
+            assistant_index_buffer += chunk
+        
+        # Buscar el último número entre 1 y 3 en la respuesta
+        match = re.search(r'[1-3](?=[^\d]*$)', assistant_index_buffer)
+        if match:
+            index = int(match.group(0))
+            logger.debug(f"Extracted assistant index: {index} from response: {assistant_index_buffer}")
+            return index
+        
+        # Si no se encuentra un número válido, loguear el error y devolver 1 por defecto
+        logger.error(f'No valid assistant index found in: {assistant_index_buffer}')
+        return 1
+        
     def query(
         self,
         session_id: int,
@@ -129,13 +170,16 @@ class DefaultArchitecture(AgentArchitecture):
         :param user_input: The user's input query.
 
         :returns: Generator with response text in chunks."""
-        # TODO: yield (chunk, context_length)
         # create a new conversation if not exists
         if not self.memory[session_id]:
             self.new_session(session_id)
 
         # route query
-        assistant_index = self.__get_assistant_index(user_input)
+        router_result = self._get_assistant_index(user_input)
+        logger.info(f"Router returned index: {router_result} for query: {user_input}")
+        assistant_index = router_result  # Ensure we use the actual returned value
+        logger.info(f"Using assistant index: {assistant_index} for query: {user_input}")
+        
 
         # RESPONSE
         prompt = self.__prompts['general']
@@ -143,23 +187,24 @@ class DefaultArchitecture(AgentArchitecture):
         if assistant_index == 2:
             prompt = self.__prompts['reasoning']
         elif assistant_index == 3:
-            # Execute tool call and temporarily concatenate output to user
-            # message, but the tool call result is thrown away (for simplicity)
-            # in order to avoid display the result when load_session is called.
-            tool_call_result: str | None = None
-            tool_call_str: str | None = None
+            tool_call_result = None
+            tool_call_str = None
+            logger.info(f"Executing tool call for query: {user_input}")
             for tool_call_execution in self.__tool_call(
                 user_input,
                 self.memory[session_id],
             ):
                 tool_call_state = tool_call_execution['state']
                 if tool_call_state == 'error':
+                    logger.error(f"Tool call failed: {tool_call_execution.get('message', 'Unknown error')}")
                     break
                 elif tool_call_state == 'running':
                     # should inform client of tool execution ...
                     tool_call_str = tool_call_execution['message']
+                    logger.info(f"Tool call running: {tool_call_str}")
                 else:
                     tool_call_result = tool_call_execution['message']
+                    logger.info(f"Tool call completed with {len(tool_call_result) if tool_call_result else 0} characters of results")
 
             if tool_call_result:
                 user_input_with_tool_call += (
@@ -168,6 +213,8 @@ class DefaultArchitecture(AgentArchitecture):
                     f'### TOOL {tool_call_str} END ###'
                 )
                 assistant_index = 1
+            else:
+                logger.warning(f"No tool call result for query: {user_input}")
 
         # Replace system prompt with the one built for specific assistant type
         conversation = self.memory[session_id]
@@ -209,50 +256,145 @@ class DefaultArchitecture(AgentArchitecture):
         conversation.messages[-1].set_tokens(response_tokens)
         logger.debug(f'CONVERSATION: {conversation}')
 
-    def new_session(self, session_id: int, name: str):
-        """Create a new conversation if not exists"""
-        # logger.debug('Creating new session')
-        if session_id not in self.memory:
-            self.memory[session_id] = Conversation(name=name)
-        self.memory[session_id] += Message(
-            role=Role.SYS,
-            content=self.__prompts['general']
-        )
+    def __should_use_direct_rag(self, user_input: str) -> bool:
+        """Determines if a query should directly use RAG without the tool call mechanism."""
+        # Keywords that suggest the user wants to search for information
+        search_keywords = [
+            "search", "find", "look up", "locate", "retrieve", 
+            "tell me about", "what is", "how to", "explain",
+            "information on", "details about"
+        ]
+        
+        # Specific topics that should always use RAG
+        topic_keywords = ["kerberoasting", "active-directory", "privilege-escalation"]
+        
+        # Check if query contains search intent or specific topics
+        lower_input = user_input.lower()
+        return (any(keyword in lower_input for keyword in search_keywords) or 
+                any(topic in lower_input for topic in topic_keywords))
 
-    def __get_assistant_index(
-        self,
-        user_input: str
-    ) -> int:
-        """Determine assistant index based on user input
-
-        :param user_input: The user's input query.
-        :return: An index to choose the proper prompt.
-        """
-        route_messages = Conversation(
-            name='get_assistant_index',
-            messages=[
-                {'role': 'system', 'content': self.__prompts['router']},
-                {'role': 'user', 'content': user_input}
-            ]
-        )
-        assistant_index_buffer = ''
-        for chunk, _, _ in self.llm.query(route_messages):
-            if not chunk:
-                break
-            assistant_index_buffer += chunk
+    def __handle_direct_rag_query(self, session_id: int, user_input: str) -> Generator:
+        """Handles a query directly using RAG without the tool call mechanism."""
+        from src.core.tools import RAG_SEARCH
+        
+        # Determine relevant topics based on query content
+        topics = self.__extract_relevant_topics(user_input)
+        topic_str = ",".join(topics) if topics else None
+        
+        logger.info(f"Executing direct RAG search with topics: {topic_str}")
+        
         try:
-            return int(assistant_index_buffer.strip()[:1])
-        except ValueError:
-            logger.error(
-                f'Wrong assistant index: {assistant_index_buffer}'
+            # Execute RAG search directly
+            rag_result = RAG_SEARCH.run(
+                rag_query=user_input,
+                collection=None,
+                topics=topic_str,
+                collection_title=None,
+                detail_level="detailed"
             )
-            return 1
+            
+            # Add user message to conversation
+            conversation = self.memory[session_id]
+            conversation += Message(role=Role.USER, content=user_input)
+            
+            # Format response with RAG results and yield it
+            intro_text = "Based on my research, I've found the following information relevant to your query:\n\n"
+            yield intro_text
+            
+            # Format and yield the RAG result
+            formatted_result = self.__format_rag_result(rag_result)
+            yield formatted_result
+            
+            # Add conclusion
+            conclusion = "\n\nIs there anything specific about these findings you'd like me to elaborate on?"
+            yield conclusion
+            
+            # Save the complete response to the conversation
+            complete_response = intro_text + formatted_result + conclusion
+            conversation += Message(role=Role.ASSISTANT, content=complete_response)
+            
+        except Exception as e:
+            logger.error(f"Error in direct RAG query: {str(e)}")
+            error_msg = "I apologize, but I encountered an issue while searching our knowledge base. "
+            error_msg += "Let me answer based on my general knowledge instead.\n\n"
+            
+            yield error_msg
+            
+            # Fall back to general assistant
+            conversation = self.memory[session_id]
+            conversation += Message(role=Role.USER, content=user_input)
+            conversation.messages[0] = Message(role=Role.SYS, content=self.__prompts['general'])
+            
+            # Generate a fallback response
+            fallback_response = ""
+            for chunk, _, _ in self.llm.query(conversation):
+                if isinstance(chunk, str) and chunk:
+                    fallback_response += chunk
+                    yield chunk
+            
+            conversation += Message(role=Role.ASSISTANT, content=error_msg + fallback_response)
+
+    def __extract_relevant_topics(self, query: str) -> List[str]:
+        """Extract relevant topics from the query for RAG search."""
+        topics = []
+        query_lower = query.lower()
+        
+        # Map keywords to topics
+        topic_mappings = {
+            "active directory": ["active-directory", "domain-controllers"],
+            "kerberos": ["active-directory", "kerberos", "authentication"],
+            "sql": ["web-exploitation", "injection", "database"],
+            "web": ["web-exploitation", "injection"],
+            "password": ["credential-access", "authentication"],
+            "credential": ["credential-access", "authentication"],
+            "privilege": ["privilege-escalation"],
+            "escalation": ["privilege-escalation"],
+            "lateral": ["lateral-movement"],
+            "evasion": ["defense-evasion"],
+            "persistence": ["persistence"],
+            "initial access": ["initial-access"],
+            "phishing": ["initial-access", "social-engineering"],
+            "reconnaissance": ["reconnaissance"],
+            "enumeration": ["reconnaissance", "enumeration"],
+            "cloud": ["cloud-exploitation"],
+            "aws": ["cloud-exploitation"],
+            "azure": ["cloud-exploitation"],
+            "network": ["network-exploitation"],
+            "wireless": ["wireless-exploitation"],
+            "physical": ["physical"],
+            "social": ["social-engineering"]
+        }
+        
+        # Check for topic keywords in the query
+        for keyword, related_topics in topic_mappings.items():
+            if keyword in query_lower:
+                topics.extend(related_topics)
+        
+        # Remove duplicates
+        return list(set(topics))
+
+    def __format_rag_result(self, result: str) -> str:
+        """Format RAG results for better readability."""
+        # Remove redundant section headers if present
+        result = re.sub(r'From collection: ([^\n]+)\n-{60}', r'From collection: \1', result)
+        
+        # Add line breaks between different collections for better readability
+        result = re.sub(r'From collection:', r'\n\nFrom collection:', result)
+        
+        # Remove any potential duplicate information
+        lines = result.split('\n')
+        unique_lines = []
+        for line in lines:
+            if line and line not in unique_lines:
+                unique_lines.append(line)
+        
+        return '\n'.join(unique_lines)
 
     def __tool_call(
         self,
         user_input: str,
         conversation: Conversation
-    ):
+    ) -> Generator:
         """Query a LLM for a tool call and executes it.
 
         :param user_input: The user's input query.
@@ -260,6 +402,9 @@ class DefaultArchitecture(AgentArchitecture):
 
         :returns: Result of the tool execution."""
         # replace system prompt and generate tool call
+        logger.info(f"Attempting tool call for query: {user_input}")
+        
+        original_system_prompt = conversation.messages[0].content
         conversation.messages[0] = Message(
             role='system',
             content=self.__prompts['tool']
@@ -272,15 +417,23 @@ class DefaultArchitecture(AgentArchitecture):
         tool_call_response = ''
         for chunk, _, _ in self.llm.query(conversation):
             tool_call_response += chunk
+        
+        logger.info(f"Tool call response: {tool_call_response[:200]}...")
+        
+        # Restore original conversation state
+        conversation.messages.pop()  # Remove the user message we added
+        conversation.messages[0] = Message(role='system', content=original_system_prompt)
 
         # extract tool call and run it
         name, parameters, tool_extraction_error_message = self.__extract_tool_call(tool_call_response)
         if not name:
+            error_message = f"Tool extraction failed: {tool_extraction_error_message}"
+            logger.error(error_message)
             yield {
                 'name': name,
                 'parameters': parameters,
                 'state': 'error',
-                'message': tool_extraction_error_message
+                'message': error_message
             }
             return
 
@@ -301,6 +454,7 @@ class DefaultArchitecture(AgentArchitecture):
                 name=name,
                 arguments=parameters
             )
+            logger.info(f"Tool execution successful with {len(tool_call_result)} characters")
             yield {
                 'name': name,
                 'parameters': parameters,
@@ -321,51 +475,33 @@ class DefaultArchitecture(AgentArchitecture):
                 'message': error_message
             }
             return
-
-    def __extract_tool_call(
-        self,
-        tool_call_response: str
-    ) -> Tuple[str | None, Dict, str | None]:
-        """Extracts the tool call and its parameters from the LLM response.
-
-        :param tool_call_response: The response containing a tool call.
-
-        :returns:
-            (tool name, parameters, None) OK
-            (None, None, error_message) if extraction fails."""
-        tool_call_match = re.search(self.__tool_pattern, tool_call_response)
-        if not tool_call_match:
-            error_message = (
-                f'Tool call failed: '
-                f'not found in LLM response: {tool_call_response}'
-            )
+        
+    def __extract_tool_call(self, tool_call_response: str) -> Tuple[str | None, Dict, str | None]:
+        """Extracts the tool call and its parameters from the model's response."""
+        logger.info(f"Attempting to extract tool call from response: {tool_call_response[:200]}...")
+        
+        # Search for a JSON block containing "name" and "parameters"
+        json_pattern = r'\{.*"name".*"parameters".*\}'
+        match = re.search(json_pattern, tool_call_response, re.DOTALL)
+        
+        if match:
+            try:
+                tool_call_json = match.group(0)
+                tool_call_dict = json.loads(tool_call_json)
+                name = tool_call_dict.get("name")
+                parameters = tool_call_dict.get("parameters", {})
+                if name and parameters:
+                    logger.info(f"Tool call extracted: {name} with parameters {parameters}")
+                    return name, parameters, None
+                else:
+                    error_message = "Missing 'name' or 'parameters' in tool call"
+                    logger.error(error_message)
+                    return None, {}, error_message
+            except json.JSONDecodeError as e:
+                error_message = f"Could not parse JSON: {str(e)}"
+                logger.error(error_message)
+                return None, {}, error_message
+        else:
+            error_message = "No valid tool call found in JSON format"
             logger.error(error_message)
             return None, {}, error_message
-        try:
-            # fix response to be JSON
-            tool_call_json = tool_call_match \
-                .group(1) \
-                .replace("'", '"') \
-                .strip()
-
-            tool_call_dict = json.loads(tool_call_json)
-            name, parameters = tool_call_dict['name'], tool_call_dict['parameters']
-        except json.JSONDecodeError as json_extract_err:
-            error_message = (
-                f'Tool call failed: not found in LLM response: {tool_call_response}'
-                f'\nError: {json_extract_err}'
-            )
-            logger.error(error_message)
-            return None, {}, error_message
-
-        # check if tool exists
-        found = False
-        for t in self.__tools:
-            if t['function']['name'] == name:
-                found = True
-        if not found:
-            error_message = f'Tool call failed: {name} is not a tool.'
-            logger.error(error_message)
-            return None, {}, error_message
-
-        return name, parameters, None

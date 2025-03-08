@@ -36,10 +36,10 @@ AVAILABLE_MODELS = {
     # Added proper configuration for deepseek-r1:14b
     'deepseek-r1': {
         'options': {
-            'temperature': 0.5,
+            'temperature': 0.2,
             'num_ctx': 16384
         },
-        'tools': False
+        'tools': True
     }
 }
 logger = get_logger(__name__)

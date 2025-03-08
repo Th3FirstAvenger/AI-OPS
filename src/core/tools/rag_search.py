@@ -41,7 +41,8 @@ class RAGSearch:
         Returns:
             Retrieved information from the knowledge base
         """
-        logger.info(f"Searching RAG with query1: {rag_query}")
+        logger.info(f"RAG Search called with query: {rag_query}")
+        logger.info(f"Store available: {self.store is not None}")
         try:
             if not self.store:
                 logger.error("RAG Search called but store is not initialized")

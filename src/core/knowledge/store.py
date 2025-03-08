@@ -222,7 +222,7 @@ class EnhancedStore:
             
             # Create a cache key
             cache_key = f"{query}|{collection_name}|{','.join(topics or [])}|{limit}|{rerank}"
-            
+                       
             # Check cache
             current_time = time.time()
             if cache_key in self.result_cache:
@@ -247,6 +247,9 @@ class EnhancedStore:
             )
             
             logger.info(f"BM25 search returned {len(bm25_results)} results")
+            logger.info(f"-------- BM25 results: {bm25_results}")
+            for i, (chunk, score) in enumerate(bm25_results):
+                logger.info(f"Doc {i+1}: {chunk.text[:100]}... (Puntaje BM25: {score:.3f})")
             
             # Vector retrieval
             vector_results = self._vector_retrieve(
@@ -257,6 +260,9 @@ class EnhancedStore:
             )
             
             logger.info(f"Vector search returned {len(vector_results)} results")
+            logger.info(f"-------- Vector results: {vector_results}")
+            for i, (chunk, score) in enumerate(vector_results):
+                logger.info(f"Doc {i+1}: {chunk['text'][:100]}... (Puntaje Vector: {score:.3f})")
             
             # Combine results with weights
             combined_results = self._merge_results(
@@ -268,12 +274,19 @@ class EnhancedStore:
             )
             
             logger.info(f"Merged search returned {len(combined_results)} results")
+            logger.info(f"-------- Combined results: {combined_results}")
+            for i, result in enumerate(combined_results):
+                logger.info(f"Doc {i+1}: {result['text'][:100]}... (Puntaje Combinado: {result['combined_score']:.3f})")
             
             # Apply reranking if enabled and available
             final_results = combined_results
             if should_rerank and combined_results:
                 logger.info("Applying neural reranking")
                 final_results = self.reranker.rerank(query, combined_results, limit)
+                logger.info(f"Reranked search returned {len(final_results)} results")
+                logger.info(f"-------- Reranked results: {final_results}")
+                for i, result in enumerate(final_results):
+                    logger.info(f"Doc {i+1}: {result['text'][:100]}... (Puntaje Reranked: {result['combined_score']:.3f})")
             else:
                 # Just apply the limit if no reranking
                 final_results = combined_results[:limit]
@@ -291,6 +304,8 @@ class EnhancedStore:
             if len(self.result_cache) > self.max_cache_size:
                 self._trim_cache()
             
+            logger.info(f"----Returning {len(results)} results")
+            logger.info(f"----Final results: {results}")
             return results
             
         except Exception as e:
