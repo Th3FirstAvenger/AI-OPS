@@ -781,34 +781,59 @@ class AgentClient:
     def _execute_foreground(self, command: str):
         """Execute command in foreground (blocking)"""
         from pathlib import Path
+        import sys
 
         try:
             # Create log directory if auto-logging enabled and we have an operation
             log_file = None
+            log_handle = None
             if self.opcontext.auto_log and self.opcontext.operation:
                 log_dir = Path.home() / '.aiops' / 'oplog' / 'command_logs' / str(self.opcontext.operation.id)
                 log_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = time.strftime('%Y%m%d_%H%M%S')
                 cmd_safe = command[:30].replace('/', '_').replace(' ', '_')
                 log_file = log_dir / f"{timestamp}_{cmd_safe}.log"
+                log_handle = open(log_file, 'w')
 
-            # Execute command with output going directly to terminal AND log file
-            if log_file:
-                # Use tee to show output and save to file
-                full_command = f"{{ {command}; }} 2>&1 | tee {log_file}"
-            else:
-                full_command = command
-
-            # Execute without capturing - output goes directly to terminal
+            # Execute command with real-time output streaming
             start_time = time.time()
-            result = subprocess.run(
-                full_command,
+            process = subprocess.Popen(
+                command,
                 shell=True,
-                timeout=300  # 5 minute timeout for long commands
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1  # Line buffered
             )
-            elapsed = time.time() - start_time
 
-            success = result.returncode == 0
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    # Print to terminal immediately
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+
+                    # Write to log file if enabled
+                    if log_handle:
+                        log_handle.write(line)
+                        log_handle.flush()
+
+            # Wait for process to complete
+            try:
+                process.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                if log_handle:
+                    log_handle.close()
+                self.console.print("\n[red]Command timed out (5 minute limit)[/]")
+                return False
+
+            elapsed = time.time() - start_time
+            success = process.returncode == 0
+
+            # Close log file
+            if log_handle:
+                log_handle.close()
 
             # Read log file for database entry if it exists
             output_preview = None
@@ -838,15 +863,14 @@ class AgentClient:
                     # Show log info
                     if log_file:
                         self.console.print(f"[dim]💾 Output saved to: {log_file}[/]")
-                        self.console.print(f"[dim]⏱️  Execution time: {elapsed:.2f}s | Return code: {result.returncode}[/]")
+                        self.console.print(f"[dim]⏱️  Execution time: {elapsed:.2f}s | Return code: {process.returncode}[/]")
 
             return success
 
-        except subprocess.TimeoutExpired:
-            self.console.print("\n[red]Command timed out (5 minute limit)[/]")
-            return False
         except Exception as e:
             self.console.print(f"[red]Error executing command: {e}[/]")
+            if log_handle:
+                log_handle.close()
             return False
 
     # ==================== OPERATION MANAGEMENT ====================
