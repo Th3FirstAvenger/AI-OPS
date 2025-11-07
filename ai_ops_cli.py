@@ -28,8 +28,107 @@ from pydantic import BaseModel, validate_call
 # Import OpLog functionality
 from src.core.oplog import OperationLog, LogEntry, Operation, Target
 from src.core.oplog.models import ActionType, Phase, OperationContext
+import threading
+import time
+from datetime import datetime as dt
+from enum import Enum
 
 VERSION = "0.1.0"
+
+
+# ==================== JOB SYSTEM (C2-like) ====================
+
+class JobStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    KILLED = "killed"
+
+
+class Job:
+    """Represents a background job/task"""
+
+    def __init__(self, job_id: int, command: str, operation_id: Optional[int] = None,
+                 target_id: Optional[int] = None):
+        self.id = job_id
+        self.command = command
+        self.operation_id = operation_id
+        self.target_id = target_id
+        self.status = JobStatus.RUNNING
+        self.start_time = dt.now()
+        self.end_time = None
+        self.process = None
+        self.output_lines = []
+        self.return_code = None
+        self.log_file = None
+        self.thread = None
+
+    def get_runtime(self) -> str:
+        """Get formatted runtime"""
+        end = self.end_time or dt.now()
+        delta = end - self.start_time
+        seconds = int(delta.total_seconds())
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            return f"{seconds // 60}m {seconds % 60}s"
+        else:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            return f"{hours}h {minutes}m"
+
+
+class JobManager:
+    """Manages background jobs like a C2"""
+
+    def __init__(self):
+        self.jobs = {}
+        self.next_id = 1
+        self.lock = threading.Lock()
+
+    def create_job(self, command: str, operation_id: Optional[int] = None,
+                   target_id: Optional[int] = None) -> Job:
+        """Create a new job"""
+        with self.lock:
+            job = Job(self.next_id, command, operation_id, target_id)
+            self.jobs[self.next_id] = job
+            self.next_id += 1
+            return job
+
+    def get_job(self, job_id: int) -> Optional[Job]:
+        """Get job by ID"""
+        return self.jobs.get(job_id)
+
+    def list_jobs(self) -> list[Job]:
+        """List all jobs"""
+        return list(self.jobs.values())
+
+    def kill_job(self, job_id: int) -> bool:
+        """Kill a running job"""
+        job = self.jobs.get(job_id)
+        if job and job.status == JobStatus.RUNNING and job.process:
+            try:
+                job.process.kill()
+                job.status = JobStatus.KILLED
+                job.end_time = dt.now()
+                return True
+            except:
+                return False
+        return False
+
+    def cleanup_old_jobs(self, max_age_hours: int = 24):
+        """Remove old completed jobs"""
+        with self.lock:
+            to_remove = []
+            for job_id, job in self.jobs.items():
+                if job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.KILLED]:
+                    if job.end_time:
+                        age = (dt.now() - job.end_time).total_seconds() / 3600
+                        if age > max_age_hours:
+                            to_remove.append(job_id)
+
+            for job_id in to_remove:
+                del self.jobs[job_id]
 
 
 def build_input_multiline(current_session, api_url, model_name):
@@ -86,6 +185,10 @@ class AgentClient:
         if active_op:
             self.opcontext.operation = active_op
 
+        # Initialize Job Manager (C2-like)
+        self.job_manager = JobManager()
+        self.job_notifications = []  # Queue for job completion notifications
+
         self.multiline_input = build_input_multiline(
             self.current_session,
             self.api_url,
@@ -132,6 +235,12 @@ class AgentClient:
             ':sync': self.sync_logs,
             ':toggle autolog': self.toggle_autolog,
 
+            # Job management (C2-like)
+            ':jobs': self.list_jobs,
+            ':job output': self.job_output,
+            ':job kill': self.job_kill,
+            ':job rerun': self.job_rerun,
+
             # RAG is disabled in the current version
             # 'list collections': self.__list_collections,
             # 'create collection': self.__create_collection
@@ -168,6 +277,12 @@ class AgentClient:
         
         while True:
             try:
+                # Show job notifications if any
+                if self.job_notifications:
+                    for notification in self.job_notifications:
+                        self.console.print(f"\n{notification}")
+                    self.job_notifications.clear()
+
                 # Use prompt_toolkit with dynamic prompt
                 user_input = PromptSession(
                     history=history,
@@ -567,8 +682,104 @@ class AgentClient:
             self.console.print("[dim]Commands will be executed directly. Use 'shell' again to exit.[/]")
 
     def execute_shell_command(self, command: str):
-        """Execute a shell command and log it"""
-        import time
+        """Execute a shell command (foreground or background as job)"""
+        from pathlib import Path
+
+        # Check if command should run in background (ends with &)
+        run_as_job = command.strip().endswith('&')
+        if run_as_job:
+            command = command.strip()[:-1].strip()  # Remove the &
+            return self._execute_as_job(command)
+        else:
+            return self._execute_foreground(command)
+
+    def _execute_as_job(self, command: str):
+        """Execute command as background job"""
+        from pathlib import Path
+
+        # Create job
+        job = self.job_manager.create_job(
+            command,
+            operation_id=self.opcontext.operation.id if self.opcontext.operation else None,
+            target_id=self.opcontext.current_target.id if self.opcontext.current_target else None
+        )
+
+        # Setup log file
+        if self.opcontext.auto_log and self.opcontext.operation:
+            log_dir = Path.home() / '.aiops' / 'oplog' / 'command_logs' / str(self.opcontext.operation.id)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            cmd_safe = command[:30].replace('/', '_').replace(' ', '_')
+            job.log_file = log_dir / f"job{job.id}_{timestamp}_{cmd_safe}.log"
+
+        # Start job in background thread
+        def run_job():
+            try:
+                # Execute with output redirected to log file
+                if job.log_file:
+                    full_command = f"{{ {command}; }} > {job.log_file} 2>&1"
+                else:
+                    full_command = command
+
+                job.process = subprocess.Popen(
+                    full_command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+
+                # Wait for completion
+                job.process.wait()
+                job.return_code = job.process.returncode
+                job.status = JobStatus.COMPLETED if job.return_code == 0 else JobStatus.FAILED
+                job.end_time = dt.now()
+
+                # Add notification
+                status_emoji = "✓" if job.status == JobStatus.COMPLETED else "✗"
+                self.job_notifications.append(
+                    f"[bold cyan]Job {job.id}[/] {status_emoji} finished in {job.get_runtime()} | Return code: {job.return_code}"
+                )
+
+                # Auto-log if enabled
+                if self.opcontext.auto_log:
+                    cmd_base = command.split()[0] if command.split() else command
+                    if cmd_base not in self.opcontext.log_filter:
+                        output_preview = None
+                        if job.log_file and job.log_file.exists():
+                            try:
+                                with open(job.log_file, 'r') as f:
+                                    output_preview = f.read(500)
+                            except:
+                                pass
+
+                        self.oplog.add_log(
+                            action_type=ActionType.COMMAND,
+                            description=f"Job {job.id}: {command}",
+                            command=command,
+                            output=output_preview,
+                            success=job.return_code == 0,
+                            operation_id=job.operation_id,
+                            target_id=job.target_id,
+                            phase=self.opcontext.current_phase
+                        )
+
+            except Exception as e:
+                job.status = JobStatus.FAILED
+                job.end_time = dt.now()
+                self.job_notifications.append(f"[bold cyan]Job {job.id}[/] [red]failed[/]: {str(e)}")
+
+        job.thread = threading.Thread(target=run_job, daemon=True)
+        job.thread.start()
+
+        self.console.print(f"[green]✓ Job {job.id} started in background[/]")
+        self.console.print(f"[dim]Command: {command}[/]")
+        if job.log_file:
+            self.console.print(f"[dim]Output: {job.log_file}[/]")
+        return True
+
+    def _execute_foreground(self, command: str):
+        """Execute command in foreground (blocking)"""
         from pathlib import Path
 
         try:
@@ -613,7 +824,7 @@ class AgentClient:
                 # Check if command should be filtered
                 cmd_base = command.split()[0] if command.split() else command
                 if cmd_base not in self.opcontext.log_filter:
-                    log_entry = self.oplog.add_log(
+                    self.oplog.add_log(
                         action_type=ActionType.COMMAND,
                         description=f"Executed: {command}",
                         command=command,
@@ -1060,6 +1271,157 @@ class AgentClient:
             if 'error' in result:
                 self.console.print(f"[red]Error: {result['error']}[/]")
 
+    # ==================== JOB MANAGEMENT ====================
+
+    def list_jobs(self):
+        """List all jobs (C2-like)"""
+        jobs = self.job_manager.list_jobs()
+
+        if not jobs:
+            self.console.print("[yellow]No jobs found[/]")
+            return
+
+        table = Table(title="Background Jobs")
+        table.add_column("ID", style="cyan", justify="center")
+        table.add_column("Status", justify="center")
+        table.add_column("Command", style="white")
+        table.add_column("Runtime", justify="right")
+        table.add_column("Return Code", justify="center")
+
+        for job in jobs:
+            # Status with color
+            if job.status == JobStatus.RUNNING:
+                status = "[yellow]●[/] RUNNING"
+            elif job.status == JobStatus.COMPLETED:
+                status = "[green]✓[/] DONE"
+            elif job.status == JobStatus.FAILED:
+                status = "[red]✗[/] FAILED"
+            else:
+                status = "[red]⊗[/] KILLED"
+
+            # Command truncation
+            cmd_display = job.command if len(job.command) <= 50 else job.command[:47] + "..."
+
+            table.add_row(
+                str(job.id),
+                status,
+                cmd_display,
+                job.get_runtime(),
+                str(job.return_code) if job.return_code is not None else "-"
+            )
+
+        self.console.print(table)
+
+    def job_output(self):
+        """View job output"""
+        jobs = self.job_manager.list_jobs()
+        if not jobs:
+            self.console.print("[yellow]No jobs found[/]")
+            return
+
+        try:
+            job_id = int(Prompt.ask("Job ID", console=self.console))
+            job = self.job_manager.get_job(job_id)
+
+            if not job:
+                self.console.print(f"[red]Job {job_id} not found[/]")
+                return
+
+            self.console.print(f"\n[bold]Job {job.id}:[/] {job.command}")
+            self.console.print(f"[bold]Status:[/] {job.status.value}")
+            self.console.print(f"[bold]Runtime:[/] {job.get_runtime()}")
+            if job.return_code is not None:
+                self.console.print(f"[bold]Return Code:[/] {job.return_code}")
+
+            if job.log_file and job.log_file.exists():
+                self.console.print(f"\n[bold]Output:[/]")
+                try:
+                    with open(job.log_file, 'r') as f:
+                        output = f.read()
+                        if output:
+                            self.console.print(output)
+                        else:
+                            self.console.print("[dim]No output yet[/]")
+                except Exception as e:
+                    self.console.print(f"[red]Error reading output: {e}[/]")
+            else:
+                self.console.print("\n[yellow]No log file available[/]")
+
+        except ValueError:
+            self.console.print("[red]Invalid job ID[/]")
+
+    def job_kill(self):
+        """Kill a running job"""
+        # Show running jobs
+        running_jobs = [j for j in self.job_manager.list_jobs() if j.status == JobStatus.RUNNING]
+        if not running_jobs:
+            self.console.print("[yellow]No running jobs[/]")
+            return
+
+        table = Table(title="Running Jobs")
+        table.add_column("ID", style="cyan")
+        table.add_column("Command", style="white")
+        table.add_column("Runtime", justify="right")
+
+        for job in running_jobs:
+            cmd_display = job.command if len(job.command) <= 60 else job.command[:57] + "..."
+            table.add_row(str(job.id), cmd_display, job.get_runtime())
+
+        self.console.print(table)
+
+        try:
+            job_id = int(Prompt.ask("Job ID to kill", console=self.console))
+
+            if self.job_manager.kill_job(job_id):
+                self.console.print(f"[green]✓ Job {job_id} killed[/]")
+            else:
+                self.console.print(f"[red]Failed to kill job {job_id}[/]")
+
+        except ValueError:
+            self.console.print("[red]Invalid job ID[/]")
+
+    def job_rerun(self):
+        """Re-execute a failed or completed job"""
+        jobs = [j for j in self.job_manager.list_jobs()
+                if j.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.KILLED]]
+
+        if not jobs:
+            self.console.print("[yellow]No completed/failed jobs to rerun[/]")
+            return
+
+        table = Table(title="Completed/Failed Jobs")
+        table.add_column("ID", style="cyan")
+        table.add_column("Status")
+        table.add_column("Command", style="white")
+        table.add_column("Return Code", justify="center")
+
+        for job in jobs:
+            status = "[green]DONE[/]" if job.status == JobStatus.COMPLETED else "[red]FAILED/KILLED[/]"
+            cmd_display = job.command if len(job.command) <= 50 else job.command[:47] + "..."
+            table.add_row(
+                str(job.id),
+                status,
+                cmd_display,
+                str(job.return_code) if job.return_code is not None else "-"
+            )
+
+        self.console.print(table)
+
+        try:
+            job_id = int(Prompt.ask("Job ID to rerun", console=self.console))
+            old_job = self.job_manager.get_job(job_id)
+
+            if not old_job:
+                self.console.print(f"[red]Job {job_id} not found[/]")
+                return
+
+            # Create new job with same command
+            self.console.print(f"[dim]Re-running: {old_job.command}[/]")
+            self._execute_as_job(old_job.command)
+
+        except ValueError:
+            self.console.print("[red]Invalid job ID[/]")
+
     def help(self):
         """Print help message"""
         # Basic Commands
@@ -1107,7 +1469,15 @@ class AgentClient:
         self.console.print("- [bold cyan]:sync[/]           : Sync logs to central server")
         self.console.print("- [bold cyan]:toggle autolog[/] : Toggle automatic command logging")
 
-        self.console.print("\n[dim]In shell mode, commands are executed directly and auto-logged.[/]")
+        self.console.print("\n[bold red]Job Management (C2-like)[/]")
+        self.console.print("- [bold cyan]:jobs[/]           : List all background jobs")
+        self.console.print("- [bold cyan]:job output[/]     : View job output")
+        self.console.print("- [bold cyan]:job kill[/]       : Kill a running job")
+        self.console.print("- [bold cyan]:job rerun[/]      : Re-execute a completed/failed job")
+
+        self.console.print("\n[dim]In shell mode:[/]")
+        self.console.print("[dim]- Commands are executed directly and auto-logged[/]")
+        self.console.print("[dim]- Add '&' at the end to run as background job (e.g., 'nmap 10.0.0.1 &')[/]")
         self.console.print("\n")
 
     @staticmethod
