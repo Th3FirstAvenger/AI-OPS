@@ -1189,36 +1189,82 @@ class AgentClient:
         self.console.print("[green]✓[/] Note added")
 
     def view_logs(self):
-        """View recent logs"""
+        """View recent logs and running jobs"""
         limit_str = Prompt.ask("Number of logs to show", console=self.console, default="20")
         limit = int(limit_str) if limit_str.isdigit() else 20
 
+        # Get completed logs
         logs = self.oplog.get_logs(
             operation_id=self.opcontext.operation.id if self.opcontext.operation else None,
             limit=limit
         )
 
-        if not logs:
-            self.console.print("[yellow]No logs found[/]")
+        # Get running jobs
+        running_jobs = [j for j in self.job_manager.list_jobs() if j.status == JobStatus.RUNNING]
+
+        if not logs and not running_jobs:
+            self.console.print("[yellow]No logs or running jobs found[/]")
             return
 
-        table = Table(title=f"Recent Logs ({len(logs)})")
-        table.add_column("Time", style="dim")
-        table.add_column("Type", style="cyan")
+        table = Table(title=f"Logs & Jobs ({len(logs)} logs, {len(running_jobs)} running)")
+        table.add_column("Time", style="dim", width=8)
+        table.add_column("Status", justify="center", width=12)
+        table.add_column("Type", style="cyan", width=10)
         table.add_column("Description", style="white")
-        table.add_column("Target", style="yellow")
+        table.add_column("Target", style="yellow", width=10)
+        table.add_column("Log File", style="dim", overflow="fold")
 
+        # First, add running jobs
+        for job in running_jobs:
+            cmd_display = job.command if len(job.command) <= 40 else job.command[:37] + "..."
+
+            target_name = "-"
+            if job.target_id:
+                target_name = f"T{job.target_id}"
+
+            log_file_display = "-"
+            if job.log_file:
+                log_file_display = str(job.log_file)
+
+            table.add_row(
+                job.start_time.strftime("%H:%M:%S"),
+                f"[yellow]Job #{job.id}[/]",
+                "command",
+                cmd_display,
+                target_name,
+                log_file_display
+            )
+
+        # Then add completed logs
         for log in logs:
             target_name = "-"
             if log.target_id:
-                # We'd need to fetch target name, for now just show ID
                 target_name = f"T{log.target_id}"
+
+            # Determine log file path if it exists
+            log_file_display = "-"
+            if log.action_type == ActionType.COMMAND and log.command and self.opcontext.operation:
+                from pathlib import Path
+                log_dir = Path.home() / '.aiops' / 'oplog' / 'command_logs' / str(log.operation_id or self.opcontext.operation.id)
+                # Try to find the log file (they're named with timestamp_command.log)
+                if log_dir.exists():
+                    # Get the most recent log file that matches the command
+                    import glob
+                    cmd_safe = log.command[:30].replace('/', '_').replace(' ', '_')
+                    pattern = f"*_{cmd_safe}.log"
+                    matches = sorted(log_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if matches:
+                        log_file_display = str(matches[0])
+
+            status = "[green]✓[/]" if log.success else "[red]✗[/]"
 
             table.add_row(
                 log.timestamp.strftime("%H:%M:%S"),
+                status,
                 log.action_type.value,
-                log.description[:60] + "..." if len(log.description) > 60 else log.description,
-                target_name
+                log.description[:40] + "..." if len(log.description) > 40 else log.description,
+                target_name,
+                log_file_display
             )
 
         self.console.print(table)
