@@ -29,7 +29,7 @@ from pydantic import BaseModel, validate_call
 from src.core.oplog import OperationLog, LogEntry, Operation, Target
 from src.core.oplog.models import ActionType, Phase, OperationContext
 
-VERSION = "0.1.0-redteam"
+VERSION = "0.1.0"
 
 
 def build_input_multiline(current_session, api_url, model_name):
