@@ -153,15 +153,24 @@ def build_input_multiline(current_session, api_url, model_name):
 
 
 class CommandCompleter(Completer):
-    def __init__(self, commands):
+    def __init__(self, commands, client):
         self.commands = commands
+        self.client = client  # Reference to AgentClient to check shell_mode
 
     def get_completions(self, document, complete_event):
         # Get word being completed
         word = document.get_word_before_cursor()
-        
+
+        # In shell mode, only complete commands that start with :
+        if self.client.shell_mode and word and not word.startswith(':'):
+            return  # Don't complete shell commands
+
         # Return matching commands
         for cmd in self.commands:
+            # In shell mode, only suggest : commands (unless they explicitly typed help/clear/exit)
+            if self.client.shell_mode and not cmd.startswith(':') and cmd not in ['help', 'clear', 'exit', 'shell']:
+                continue
+
             if cmd.startswith(word):
                 yield Completion(cmd, start_position=-len(word))
 
@@ -201,21 +210,25 @@ class AgentClient:
         self.shell_mode = False
 
         self.commands = {
-            'help': self.help,
-            'clear': AgentClient.clear_terminal,
-            'exit': '',
+            # Basic commands (keep without : for convenience)
+            ':help': self.help,
+            'help': self.help,  # Alias
+            ':clear': AgentClient.clear_terminal,
+            'clear': AgentClient.clear_terminal,  # Alias
+            'exit': '',  # Exit never needs prefix
 
-            'chat': self.chat,
-
-            'new': self.new_session,
-            'save': self.save_session,
-            'delete': self.delete_session,
-            'rename': self.rename_session,
-            'list sessions': self.list_sessions,
-            'load': self.load_session,
+            # Session commands
+            ':chat': self.chat,
+            ':new': self.new_session,
+            ':save': self.save_session,
+            ':delete': self.delete_session,
+            ':rename': self.rename_session,
+            ':list sessions': self.list_sessions,
+            ':load': self.load_session,
 
             # Shell mode
-            'shell': self.toggle_shell_mode,
+            ':shell': self.toggle_shell_mode,
+            'shell': self.toggle_shell_mode,  # Alias
 
             # Red Team OpLog commands
             ':op new': self.op_new,
@@ -245,7 +258,7 @@ class AgentClient:
             # 'list collections': self.__list_collections,
             # 'create collection': self.__create_collection
 
-            'toggle thinking': self.toggle_thinking,
+            ':toggle thinking': self.toggle_thinking,
         }
 
         self.console.print("[bold blue]ai-ops-cli[/] (beta) starting.")
@@ -268,10 +281,10 @@ class AgentClient:
         """Runs the main loop of the client"""
         # Create a history object for command history
         history = InMemoryHistory()
-        
+
         # Create command completer for tab completion
-        completer = CommandCompleter(self.commands.keys())
-        
+        completer = CommandCompleter(self.commands.keys(), self)
+
         # Set in_chat flag
         self.in_chat = False
         
@@ -299,24 +312,24 @@ class AgentClient:
                 if user_input == 'exit':
                     break
 
-                # Shell mode: execute commands directly
-                if self.shell_mode and not user_input.startswith(':') and user_input not in ['shell', 'help', 'clear', 'exit']:
-                    self.execute_shell_command(user_input)
-                # Execute command if valid
-                elif user_input in self.commands:
+                # Execute command if exact match exists
+                if user_input in self.commands:
                     self.commands[user_input]()
+                # Shell mode: if doesn't start with :, execute as shell command
+                elif self.shell_mode and not user_input.startswith(':'):
+                    self.execute_shell_command(user_input)
+                # Try to find closest command (only for : commands or non-shell mode)
                 else:
-                    closest = self.find_closest_command(user_input)
-                    if closest:
-                        self.console.print(f"Using command: [bold blue]{closest}[/]")
-                        self.commands[closest]()
-                    else:
-                        # In shell mode, try to execute as shell command
-                        if self.shell_mode:
-                            self.execute_shell_command(user_input)
+                    # Only suggest commands if not in shell mode or if starts with :
+                    if not self.shell_mode or user_input.startswith(':'):
+                        closest = self.find_closest_command(user_input)
+                        if closest:
+                            self.console.print(f"Did you mean: [bold blue]{closest}[/]? Type it again to execute.")
                         else:
-                            self.console.print('Command not recognized. Try "help" for available commands.', style='bold red')
-                            self.commands['help']()
+                            self.console.print('Command not recognized. Try ":help" for available commands.', style='bold red')
+                    else:
+                        # In shell mode without :, execute as shell command
+                        self.execute_shell_command(user_input)
                     
             except KeyboardInterrupt:
                 continue
@@ -1072,24 +1085,53 @@ class AgentClient:
         self.console.print(f"[green]✓[/] Created target: [bold]{name}[/] (ID: {target_id})")
 
     def target_set(self):
-        """Set current target"""
-        name = Prompt.ask("Target name", console=self.console)
+        """Set current target by ID or name"""
+        # Show available targets first
+        targets = self.oplog.list_targets()
 
-        target = self.oplog.get_target_by_name(name)
-        if not target:
-            create = Prompt.ask(
-                f"Target '{name}' not found. Create it?",
-                choices=["y", "n"],
-                default="y",
-                console=self.console
-            )
-            if create == "y":
-                ip = Prompt.ask("IP address (optional)", console=self.console, default="")
-                target = Target(name=name, ip_address=ip if ip else None)
-                target_id = self.oplog.create_target(target)
-                target.id = target_id
-            else:
+        if targets:
+            table = Table(title="Available Targets")
+            table.add_column("ID", style="cyan")
+            table.add_column("Name", style="bold")
+            table.add_column("IP", style="green")
+            table.add_column("OS", style="yellow")
+
+            for target in targets:
+                table.add_row(
+                    str(target.id),
+                    target.name,
+                    target.ip_address or "-",
+                    target.os or "-"
+                )
+
+            self.console.print(table)
+
+        input_value = Prompt.ask("Target ID or name", console=self.console)
+
+        # Try to parse as ID first
+        target = None
+        if input_value.isdigit():
+            target = self.oplog.get_target(int(input_value))
+            if not target:
+                self.console.print(f"[red]Target with ID {input_value} not found[/]")
                 return
+        else:
+            # Search by name
+            target = self.oplog.get_target_by_name(input_value)
+            if not target:
+                create = Prompt.ask(
+                    f"Target '{input_value}' not found. Create it?",
+                    choices=["y", "n"],
+                    default="y",
+                    console=self.console
+                )
+                if create == "y":
+                    ip = Prompt.ask("IP address (optional)", console=self.console, default="")
+                    target = Target(name=input_value, ip_address=ip if ip else None)
+                    target_id = self.oplog.create_target(target)
+                    target.id = target_id
+                else:
+                    return
 
         self.opcontext.current_target = target
         self.console.print(f"[green]✓[/] Current target: [bold]{target.name}[/]")
@@ -1535,25 +1577,25 @@ class AgentClient:
         """Print help message"""
         # Basic Commands
         self.console.print("\n[bold white]Basic Commands[/]")
-        self.console.print("- [bold blue]help[/]   : Show available commands.")
-        self.console.print("- [bold blue]clear[/]  : Clears the terminal.")
-        self.console.print("- [bold blue]exit[/]   : Exit the program")
-        self.console.print("- [bold blue]shell[/]  : Toggle shell mode (execute commands directly)")
+        self.console.print("- [bold blue]:help[/] or [bold blue]help[/]   : Show available commands")
+        self.console.print("- [bold blue]:clear[/] or [bold blue]clear[/]  : Clear the terminal")
+        self.console.print("- [bold blue]exit[/]                           : Exit the program")
+        self.console.print("- [bold blue]:shell[/] or [bold blue]shell[/]  : Toggle shell mode")
 
         # Agent Related
         self.console.print("\n[bold white]AI Agent[/]")
-        self.console.print("- [bold blue]chat[/]            : Open chat with the AI agent.")
-        self.console.print("- [bold blue]back[/]            : Exit chat")
-        self.console.print("- [bold blue]toggle thinking[/] : Toggle thinking mode")
+        self.console.print("- [bold blue]:chat[/]            : Open chat with the AI agent")
+        self.console.print("- [bold blue]back[/]             : Exit chat")
+        self.console.print("- [bold blue]:toggle thinking[/] : Toggle thinking mode")
 
         # Session Related
         self.console.print("\n[bold white]AI Sessions[/]")
-        self.console.print("- [bold blue]new[/]             : Create a new AI session.")
-        self.console.print("- [bold blue]save[/]            : Save the current session.")
-        self.console.print("- [bold blue]load[/]            : Opens a session.")
-        self.console.print("- [bold blue]delete[/]          : Delete the current session.")
-        self.console.print("- [bold blue]rename[/]          : Rename the current session.")
-        self.console.print("- [bold blue]list sessions[/]   : Show the saved sessions.")
+        self.console.print("- [bold blue]:new[/]             : Create a new AI session")
+        self.console.print("- [bold blue]:save[/]            : Save the current session")
+        self.console.print("- [bold blue]:load[/]            : Opens a session")
+        self.console.print("- [bold blue]:delete[/]          : Delete the current session")
+        self.console.print("- [bold blue]:rename[/]          : Rename the current session")
+        self.console.print("- [bold blue]:list sessions[/]   : Show the saved sessions")
 
         # Red Team OpLog
         self.console.print("\n[bold red]Red Team Operations[/]")
@@ -1565,14 +1607,14 @@ class AgentClient:
 
         self.console.print("\n[bold red]Target Management[/]")
         self.console.print("- [bold cyan]:target new[/]     : Create a new target")
-        self.console.print("- [bold cyan]:target set[/]     : Set current target")
+        self.console.print("- [bold cyan]:target set[/]     : Set current target (accepts ID or name)")
         self.console.print("- [bold cyan]:target list[/]    : List all targets")
 
         self.console.print("\n[bold red]Operation Logging[/]")
         self.console.print("- [bold cyan]:phase set[/]      : Set operation phase (recon, exploitation, etc.)")
         self.console.print("- [bold cyan]:log[/]            : Add manual log entry (RDP, GUI tools, etc.)")
         self.console.print("- [bold cyan]:note[/]           : Add a quick note")
-        self.console.print("- [bold cyan]:logs[/]           : View recent logs")
+        self.console.print("- [bold cyan]:logs[/]           : View recent logs and running jobs")
         self.console.print("- [bold cyan]:stats[/]          : View operation statistics")
         self.console.print("- [bold cyan]:export[/]         : Export logs for SOC (JSON/CSV)")
         self.console.print("- [bold cyan]:sync[/]           : Sync logs to central server")
@@ -1584,9 +1626,11 @@ class AgentClient:
         self.console.print("- [bold cyan]:job kill[/]       : Kill a running job")
         self.console.print("- [bold cyan]:job rerun[/]      : Re-execute a completed/failed job")
 
-        self.console.print("\n[dim]In shell mode:[/]")
-        self.console.print("[dim]- Commands are executed directly and auto-logged[/]")
-        self.console.print("[dim]- Add '&' at the end to run as background job (e.g., 'nmap 10.0.0.1 &')[/]")
+        self.console.print("\n[dim]Shell Mode Tips:[/]")
+        self.console.print("[dim]- In shell mode, type system commands directly (e.g., 'nmap', 'ls')[/]")
+        self.console.print("[dim]- Use ':' prefix for CLI commands (e.g., ':target set', ':logs')[/]")
+        self.console.print("[dim]- Add '&' to run commands as background jobs (e.g., 'nmap -p- 10.0.0.0/24 &')[/]")
+        self.console.print("[dim]- Autocomplete only suggests CLI commands (starting with ':'[/]")
         self.console.print("\n")
 
     @staticmethod
