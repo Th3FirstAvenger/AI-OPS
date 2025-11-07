@@ -779,9 +779,11 @@ class AgentClient:
         return True
 
     def _execute_foreground(self, command: str):
-        """Execute command in foreground (blocking)"""
+        """Execute command in foreground (blocking) with real TTY"""
         from pathlib import Path
-        import sys
+        import pty
+        import os
+        import select
 
         try:
             # Create log directory if auto-logging enabled and we have an operation
@@ -793,41 +795,76 @@ class AgentClient:
                 timestamp = time.strftime('%Y%m%d_%H%M%S')
                 cmd_safe = command[:30].replace('/', '_').replace(' ', '_')
                 log_file = log_dir / f"{timestamp}_{cmd_safe}.log"
-                log_handle = open(log_file, 'w')
+                log_handle = open(log_file, 'wb')  # Binary mode for raw output
 
-            # Execute command with real-time output streaming
+            # Execute command using PTY for real-time output
             start_time = time.time()
+
+            # Create a pseudo-terminal
+            master_fd, slave_fd = pty.openpty()
+
+            # Fork the process
             process = subprocess.Popen(
                 command,
                 shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1  # Line buffered
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True
             )
 
-            # Stream output line by line
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    # Print to terminal immediately
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
+            # Close slave in parent
+            os.close(slave_fd)
 
-                    # Write to log file if enabled
-                    if log_handle:
-                        log_handle.write(line)
-                        log_handle.flush()
-
-            # Wait for process to complete
+            # Read from master and display + log
             try:
-                process.wait(timeout=300)
-            except subprocess.TimeoutExpired:
+                while True:
+                    # Use select to check if data is available (with timeout for checking process)
+                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+
+                    if ready:
+                        try:
+                            data = os.read(master_fd, 1024)
+                            if not data:
+                                break
+
+                            # Write to stdout immediately
+                            os.write(1, data)  # 1 = stdout file descriptor
+
+                            # Write to log file if enabled
+                            if log_handle:
+                                log_handle.write(data)
+                                log_handle.flush()
+
+                        except OSError:
+                            break
+
+                    # Check if process has finished
+                    if process.poll() is not None:
+                        # Read any remaining data
+                        try:
+                            while True:
+                                data = os.read(master_fd, 1024)
+                                if not data:
+                                    break
+                                os.write(1, data)
+                                if log_handle:
+                                    log_handle.write(data)
+                        except OSError:
+                            pass
+                        break
+
+            except KeyboardInterrupt:
                 process.kill()
                 if log_handle:
                     log_handle.close()
-                self.console.print("\n[red]Command timed out (5 minute limit)[/]")
+                os.close(master_fd)
+                self.console.print("\n[yellow]Command interrupted[/]")
                 return False
+            finally:
+                os.close(master_fd)
 
+            process.wait()
             elapsed = time.time() - start_time
             success = process.returncode == 0
 
@@ -839,8 +876,10 @@ class AgentClient:
             output_preview = None
             if log_file and log_file.exists():
                 try:
-                    with open(log_file, 'r') as f:
-                        output_preview = f.read(500)  # First 500 chars for DB
+                    with open(log_file, 'rb') as f:
+                        raw_data = f.read(500)
+                        # Try to decode, ignore errors for binary data
+                        output_preview = raw_data.decode('utf-8', errors='ignore')
                 except:
                     pass
 
@@ -869,7 +908,7 @@ class AgentClient:
 
         except Exception as e:
             self.console.print(f"[red]Error executing command: {e}[/]")
-            if log_handle:
+            if 'log_handle' in locals() and log_handle:
                 log_handle.close()
             return False
 
