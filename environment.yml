@@ -1,0 +1,9 @@
+name: aiops
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12  # or 3.13 for latest
+  - pip
+  - pip:
+      - -r requirements.txt

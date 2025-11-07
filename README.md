@@ -77,7 +77,7 @@ While flexibility is key, note that performance may vary depending on the model 
 
 To get started with AI-OPS, ensure you have the following dependencies installed:
 
-- **Python** (*>= 3.11*): for AI-OPS CLI interface. 
+- **Python** (*>= 3.11*, recommended **3.12+**): for AI-OPS CLI interface.
 - **Ollama** (*>= 0.3.0*): for LLM inference.
 - **Docker** : for AI-OPS API.
 
@@ -90,6 +90,31 @@ git clone https://github.com/antoninoLorenzo/AI-OPS.git
 cd AI-OPS
 ```
 
+**Setup Python Environment:**
+
+Choose one of the following methods:
+
+**Option 1: Using Conda (Recommended)**
+
+```bash
+# Create environment with Python 3.12
+conda env create -f environment.yml
+
+# Activate the environment
+conda activate aiops
+```
+
+**Option 2: Using pip + venv**
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
 Then configure Ollama, you can refer to their [documentation](https://github.com/ollama/ollama/blob/main/docs/README.md) for additional
 details:
 
@@ -99,7 +124,7 @@ ollama run MODEL
 
 > 💡 ***Tip:** If you lack mid/high-end GPUs to run LLMs locally you can follow [my guide](https://github.com/antoninoLorenzo/Ollama-on-Colab-with-ngrok) on how to run Ollama on Google Colab.*
 
-Build and run the Docker container for the AI-OPS API using the following command. Replace `ENDPOINT` with the URL of your 
+Build and run the Docker container for the AI-OPS API using the following command. Replace `ENDPOINT` with the URL of your
 Ollama instance and `MODEL` with the name of the model you wish to use (e.g., Mistral 7B):
 
 ```bash
@@ -107,7 +132,7 @@ docker build -t ai-ops:api-dev --build-arg ollama_endpoint=ENDPOINT ollama_model
 docker run -p 8000:8000 ai-ops:api-dev
 ```
 
-To start interacting with AI-OPS, install and run the `ai-ops-cli` command-line client. Make sure to 
+To start interacting with AI-OPS, install and run the `ai-ops-cli` command-line client. Make sure to
 replace `AI-OPS_API_ADDRESS` with the address of your running Docker container (e.g., http://localhost:8000):
 
 ```bash
