@@ -102,6 +102,9 @@ conda env create -f environment.yml
 
 # Activate the environment
 conda activate aiops
+
+# Download required spaCy model
+python -m spacy download en_core_web_md
 ```
 
 **Option 2: Using pip + venv**
@@ -113,6 +116,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Download required spaCy model
+python -m spacy download en_core_web_md
 ```
 
 Then configure Ollama, you can refer to their [documentation](https://github.com/ollama/ollama/blob/main/docs/README.md) for additional

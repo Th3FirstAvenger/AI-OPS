@@ -7,3 +7,6 @@ dependencies:
   - pip
   - pip:
       - -r requirements.txt
+
+# Note: After creating the environment, run:
+# python -m spacy download en_core_web_md
