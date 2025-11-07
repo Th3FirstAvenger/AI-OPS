@@ -568,21 +568,37 @@ class AgentClient:
     def execute_shell_command(self, command: str):
         """Execute a shell command and log it"""
         try:
-            # Execute command
-            result = subprocess.run(
+            # Execute command with real-time output streaming
+            process = subprocess.Popen(
                 command,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=30
+                bufsize=1  # Line buffered
             )
 
-            output = result.stdout if result.stdout else result.stderr
-            success = result.returncode == 0
+            # Collect output for logging while displaying in real-time
+            output_lines = []
 
-            # Display output
-            if output:
-                self.console.print(output)
+            try:
+                # Stream output in real-time
+                for line in iter(process.stdout.readline, ''):
+                    if line:
+                        # Display immediately
+                        print(line, end='')
+                        output_lines.append(line)
+
+                # Wait for process to complete with timeout
+                process.wait(timeout=30)
+
+            except subprocess.TimeoutExpired:
+                process.kill()
+                self.console.print("\n[red]Command timed out (30s limit)[/]")
+                return False
+
+            output = ''.join(output_lines)
+            success = process.returncode == 0
 
             # Auto-log if enabled
             if self.opcontext.auto_log:
@@ -602,9 +618,6 @@ class AgentClient:
 
             return success
 
-        except subprocess.TimeoutExpired:
-            self.console.print("[red]Command timed out (30s limit)[/]")
-            return False
         except Exception as e:
             self.console.print(f"[red]Error executing command: {e}[/]")
             return False
