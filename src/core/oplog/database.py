@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 from contextlib import contextmanager
+import requests
 
 from src.core.oplog.models import LogEntry, Operation, Target, ActionType, Phase
 from src.utils import get_logger
@@ -413,4 +414,115 @@ class OperationLog:
                 'total': total,
                 'by_type': by_type,
                 'unsynced': unsynced
+            }
+
+    # === SYNCHRONIZATION ===
+
+    def sync_to_server(self, server_url: str, timeout: int = 10) -> dict:
+        """
+        Synchronize unsynced logs to central server.
+
+        Args:
+            server_url: Base URL of the server (e.g., 'http://127.0.0.1:8000')
+            timeout: Request timeout in seconds
+
+        Returns:
+            dict with 'success', 'synced_count', 'message', and 'error' (if failed)
+        """
+        try:
+            # Get unsynced logs
+            unsynced_logs = self.get_logs(unsynced_only=True, limit=10000)
+
+            if not unsynced_logs:
+                return {
+                    'success': True,
+                    'synced_count': 0,
+                    'message': 'No logs to sync'
+                }
+
+            # Prepare payload
+            logs_data = []
+            for log in unsynced_logs:
+                log_dict = {
+                    'timestamp': log.timestamp.isoformat(),
+                    'operator': log.operator,
+                    'hostname': log.hostname,
+                    'operation_id': log.operation_id,
+                    'target_id': log.target_id,
+                    'phase': log.phase.value if log.phase else None,
+                    'action_type': log.action_type.value,
+                    'command': log.command,
+                    'tool_name': log.tool_name,
+                    'description': log.description,
+                    'output': log.output,
+                    'success': log.success,
+                    'tags': log.tags,
+                    'sensitive': log.sensitive
+                }
+                logs_data.append(log_dict)
+
+            # Send to server
+            response = requests.post(
+                f'{server_url}/oplog/sync',
+                json={'logs': logs_data},
+                timeout=timeout
+            )
+            response.raise_for_status()
+
+            result = response.json()
+
+            # Mark logs as synced
+            if result.get('success'):
+                log_ids = [log.id for log in unsynced_logs if log.id]
+                self.mark_synced(log_ids)
+
+                logger.info(f"Successfully synced {result.get('synced_count', 0)} logs to {server_url}")
+
+                return {
+                    'success': True,
+                    'synced_count': result.get('synced_count', 0),
+                    'message': result.get('message', 'Sync successful')
+                }
+            else:
+                return {
+                    'success': False,
+                    'synced_count': 0,
+                    'message': 'Server reported sync failure',
+                    'error': result.get('message', 'Unknown error')
+                }
+
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Cannot connect to server: {server_url}")
+            return {
+                'success': False,
+                'synced_count': 0,
+                'message': 'Cannot connect to server',
+                'error': 'Connection refused or server offline'
+            }
+
+        except requests.exceptions.Timeout:
+            logger.error(f"Sync request timed out after {timeout}s")
+            return {
+                'success': False,
+                'synced_count': 0,
+                'message': 'Request timed out',
+                'error': f'Server did not respond within {timeout} seconds'
+            }
+
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error during sync: {e}")
+            return {
+                'success': False,
+                'synced_count': 0,
+                'message': 'Server error',
+                'error': f'HTTP {e.response.status_code}: {e.response.text}'
+            }
+
+        except Exception as e:
+            logger.error(f"Unexpected error during sync: {e}")
+            return {
+                'success': False,
+                'synced_count': 0,
+                'message': 'Sync failed',
+                'error': str(e)
             }

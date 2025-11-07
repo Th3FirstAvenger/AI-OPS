@@ -128,6 +128,7 @@ class AgentClient:
             ':logs': self.view_logs,
             ':stats': self.view_stats,
             ':export': self.export_logs,
+            ':sync': self.sync_logs,
             ':toggle autolog': self.toggle_autolog,
 
             # RAG is disabled in the current version
@@ -937,6 +938,46 @@ class AgentClient:
         color = "green" if self.opcontext.auto_log else "red"
         self.console.print(f"Auto-logging: [{color}]{status}[/]")
 
+    def sync_logs(self):
+        """Synchronize logs to central server"""
+        # Check if there are unsynced logs
+        stats = self.oplog.get_stats()
+        unsynced_count = stats.get('unsynced', 0)
+
+        if unsynced_count == 0:
+            self.console.print("[yellow]No logs to sync[/]")
+            return
+
+        self.console.print(f"[dim]Found {unsynced_count} unsynced log(s)[/]")
+
+        # Use the API URL from the client
+        server_url = self.api_url
+
+        # Confirm sync
+        confirm = Prompt.ask(
+            f"Sync to {server_url}?",
+            choices=["y", "n"],
+            default="y",
+            console=self.console
+        )
+
+        if confirm != "y":
+            self.console.print("[yellow]Sync cancelled[/]")
+            return
+
+        # Perform sync
+        self.console.print("[dim]Syncing...[/]")
+        result = self.oplog.sync_to_server(server_url)
+
+        if result['success']:
+            self.console.print(f"[green]✓[/] {result['message']}")
+            if result['synced_count'] > 0:
+                self.console.print(f"[green]Synced {result['synced_count']} log(s)[/]")
+        else:
+            self.console.print(f"[red]✗[/] {result['message']}")
+            if 'error' in result:
+                self.console.print(f"[red]Error: {result['error']}[/]")
+
     def help(self):
         """Print help message"""
         # Basic Commands
@@ -980,6 +1021,7 @@ class AgentClient:
         self.console.print("- [bold cyan]:logs[/]           : View recent logs")
         self.console.print("- [bold cyan]:stats[/]          : View operation statistics")
         self.console.print("- [bold cyan]:export[/]         : Export logs for SOC (JSON/CSV)")
+        self.console.print("- [bold cyan]:sync[/]           : Sync logs to central server")
         self.console.print("- [bold cyan]:toggle autolog[/] : Toggle automatic command logging")
 
         self.console.print("\n[dim]In shell mode, commands are executed directly and auto-logged.[/]")

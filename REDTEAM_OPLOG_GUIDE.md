@@ -108,7 +108,14 @@ Number of logs to show: 50
 # Ver estadísticas
 [ACME-PT-2025] ai-ops > :stats
 
-# Exportar para el SOC
+# Sincronizar logs al servidor central
+[ACME-PT-2025] ai-ops > :sync
+Found 47 unsynced log(s)
+Sync to http://127.0.0.1:8000? (y/n): y
+Syncing...
+✓ Successfully synced 47 log(s)
+
+# Exportar para el SOC (backup local)
 [ACME-PT-2025] ai-ops > :export
 Export format (json/csv): json
 ✓ Exported 127 logs to oplog_ACME-PT-2025_20251107.json
@@ -200,6 +207,104 @@ timestamp,operator,hostname,action_type,command,description,target_id,phase
 2025-11-07T14:30:00,john.doe,kali-ws01,command,nmap...,Executed: nmap...,3,exploitation
 ```
 
+## 🌐 Sincronización con Servidor Central
+
+### Configuración del Servidor
+
+El servidor central debe ejecutar el backend de AI-OPS:
+
+```bash
+# En el servidor central
+cd AI-OPS
+python3 -m uvicorn src.api:app --host 0.0.0.0 --port 8000
+
+# O con Docker
+docker-compose up -d
+```
+
+### Sincronización de Logs
+
+**Manual (recomendado):**
+```bash
+# Sincronizar logs cuando termines tu sesión
+[ACME-PT-2025] ai-ops > :sync
+```
+
+**Verificar estado de sync:**
+```bash
+# Ver cuántos logs faltan sincronizar
+[ACME-PT-2025] ai-ops > :stats
+Total logs: 127
+Unsynced logs: 47  # <-- logs pendientes
+```
+
+### Endpoints de API Disponibles
+
+El servidor central expone estos endpoints:
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/oplog/sync` | POST | Sincronizar logs desde cliente |
+| `/oplog/logs` | GET | Obtener logs consolidados |
+| `/oplog/operations` | GET | Listar todas las operaciones |
+| `/oplog/stats` | GET | Estadísticas globales |
+| `/oplog/targets` | GET | Listar todos los targets |
+| `/oplog/health` | GET | Health check |
+
+### Consultar Logs Consolidados (Red Team Lead)
+
+Como Red Team Lead, puedes consultar todos los logs del equipo vía API:
+
+```bash
+# Ver todos los logs de una operación
+curl http://servidor:8000/oplog/logs?operation_id=1&limit=100
+
+# Ver logs de un operador específico
+curl http://servidor:8000/oplog/logs?operator=john.doe
+
+# Ver estadísticas globales
+curl http://servidor:8000/oplog/stats
+
+# Ver estadísticas de una operación
+curl http://servidor:8000/oplog/stats?operation_id=1
+```
+
+### Arquitectura de Sincronización
+
+```
+┌─────────────────────────────────────────────┐
+│  Operator 1 (Kali)                          │
+│  - Local SQLite: ~/.aiops/oplog/operations.db
+│  - Ejecuta comandos → auto-log             │
+│  - :sync → envía al servidor               │
+└──────────────┬──────────────────────────────┘
+               │
+               │ HTTP POST /oplog/sync
+               ▼
+┌─────────────────────────────────────────────┐
+│  Servidor Central (Team Server)             │
+│  - Base de datos centralizada               │
+│  - Consolida logs de todos los operadores  │
+│  - API REST para consultas                  │
+└──────────────┬──────────────────────────────┘
+               ▲
+               │ HTTP POST /oplog/sync
+               │
+┌──────────────┴──────────────────────────────┐
+│  Operator 2 (Windows)                       │
+│  - Local SQLite: ~/.aiops/oplog/operations.db
+│  - Ejecuta comandos → auto-log             │
+│  - :sync → envía al servidor               │
+└─────────────────────────────────────────────┘
+```
+
+### Offline-First Design
+
+- **Funciona sin conexión**: Los logs se guardan localmente aunque el servidor esté caído
+- **Sincronización diferida**: Cuando el servidor vuelve, ejecuta `:sync` para enviar todo
+- **Sin pérdida de datos**: Todos los logs están en SQLite local como backup
+- **Flag de sync**: Cada log tiene un flag `synced` para saber qué falta enviar
+
 ## 🔄 Workflow Recomendado
 
 ### Para el Red Team Lead:
@@ -261,11 +366,13 @@ chat
 
 ## 🚧 Próximas Funcionalidades
 
-- [ ] Servidor central para sincronización
+- [x] Servidor central para sincronización ✅
+- [x] API REST para consulta de logs ✅
 - [ ] Dashboard web para visualización
 - [ ] Alertas automáticas (ej: credenciales obtenidas)
 - [ ] Integración con SIEM (Splunk, ELK)
 - [ ] Generación automática de reportes
+- [ ] Auto-sync en background (opcional)
 
 ## 📝 Comandos Rápidos de Referencia
 
@@ -280,6 +387,7 @@ chat
 | `:logs` | Ver logs |
 | `:stats` | Estadísticas |
 | `:export` | Exportar para SOC |
+| `:sync` | Sincronizar con servidor |
 | `:toggle autolog` | Toggle auto-logging |
 | `chat` | Asistente de IA |
 | `help` | Ayuda completa |
@@ -288,9 +396,11 @@ chat
 
 1. **Usa nombres descriptivos** para operations y targets
 2. **Cambia la fase** según progresas para mejor organización
-3. **Exporta regularmente** para evitar pérdida de datos
-4. **Agrega notas** para contexto que los comandos no capturan
-5. **Revisa los logs** al final del día para verificar completitud
+3. **Sincroniza regularmente** con `:sync` para consolidar logs del equipo
+4. **Exporta como backup** para evitar pérdida de datos
+5. **Agrega notas** para contexto que los comandos no capturan
+6. **Revisa los logs** al final del día para verificar completitud
+7. **Verifica el estado de sync** con `:stats` antes de terminar tu sesión
 
 ---
 
