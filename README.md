@@ -103,7 +103,8 @@ conda env create -f environment.yml
 # Activate the environment
 conda activate aiops
 
-# Download required spaCy model
+# Install Python 3.12+ compatible dependencies and spaCy model
+pip install newspaper4k lxml_html_clean
 python -m spacy download en_core_web_md
 ```
 
@@ -117,9 +118,12 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Download required spaCy model
+# Install Python 3.12+ compatible dependencies and spaCy model
+pip install newspaper4k lxml_html_clean
 python -m spacy download en_core_web_md
 ```
+
+> ℹ️ **Note:** Python 3.12+ requires `newspaper4k` (instead of `newspaper3k`) and `lxml_html_clean` for web scraping functionality.
 
 Then configure Ollama, you can refer to their [documentation](https://github.com/ollama/ollama/blob/main/docs/README.md) for additional
 details:

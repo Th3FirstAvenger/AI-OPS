@@ -22,6 +22,14 @@ if [[ "$CONDA_DEFAULT_ENV" != "aiops" ]]; then
     fi
 fi
 
+# Install additional dependencies for Python 3.12+ compatibility
+echo "Installing Python 3.12+ compatible dependencies..."
+pip install newspaper4k lxml_html_clean
+
+echo ""
+echo "✓ Dependencies installed successfully"
+echo ""
+
 # Download spaCy model
 echo "Downloading spaCy English model (en_core_web_md)..."
 python -m spacy download en_core_web_md
@@ -33,6 +41,7 @@ echo ""
 # Verify installation
 echo "Verifying installation..."
 python -c "import spacy; nlp = spacy.load('en_core_web_md'); print('✓ spaCy model loaded successfully')"
+python -c "import newspaper; print('✓ newspaper4k loaded successfully')"
 
 echo ""
 echo "======================================"

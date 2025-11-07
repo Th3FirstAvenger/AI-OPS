@@ -22,5 +22,6 @@ rich~=13.7.1
 requests~=2.32.3
 playwright~=1.47.0
 setuptools~=70.0.0
-newspaper3k
+newspaper4k  # Updated from newspaper3k for Python 3.12+ compatibility
+lxml_html_clean  # Required by newspaper4k
 psutil
