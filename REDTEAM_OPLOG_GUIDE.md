@@ -1,57 +1,57 @@
-# Red Team OpLog - Guía de Uso
+# Red Team OpLog - User Guide
 
-## 🎯 Descripción
+## 🎯 Overview
 
-AI-OPS ahora incluye un sistema completo de logging de operaciones para Red Team, permitiendo:
+AI-OPS now includes a comprehensive operation logging system for Red Team activities, featuring:
 
-- **Terminal híbrido**: Ejecuta comandos directamente y usa el asistente de IA
-- **Auto-logging**: Todos los comandos se loguean automáticamente
-- **Logging manual**: Para acciones RDP, herramientas GUI, etc.
-- **Contexto de operación**: Engagement, target, fase
-- **Export para SOC**: JSON/CSV para correlación de alertas
+- **Hybrid Terminal**: Execute commands directly and use the AI assistant
+- **Auto-logging**: All commands are automatically logged
+- **Manual Logging**: For RDP sessions, GUI tools, etc.
+- **Operation Context**: Engagement, target, and phase tracking
+- **SOC Export**: JSON/CSV for alert correlation
 
-## 🚀 Inicio Rápido
+## 🚀 Quick Start
 
-### 1. Configurar una Operación
+### 1. Setup an Operation
 
 ```bash
-# Iniciar AI-OPS CLI
+# Start AI-OPS CLI
 python3 ai_ops_cli.py
 
-# Crear una nueva operación
+# Create a new operation
 ai-ops > :op new
 Operation name: ACME-PT-2025
 Client: ACME Corp
 Description: Penetration testing engagement
 
-# Ver operaciones
+# List operations
 ai-ops > :op list
 
-# Establecer operación activa
+# Set active operation
 [ACME-PT-2025] ai-ops > :op set
 ```
 
-### 2. Configurar Target
+### 2. Configure Target
 
 ```bash
-# Crear un nuevo target
+# Create a new target
 [ACME-PT-2025] ai-ops > :target new
 Target name: DC01
 IP address: 192.168.1.50
 OS: Windows Server 2019
 
-# Establecer target activo
+# Set active target
 [ACME-PT-2025] ai-ops > :target set
 Target name: DC01
 
-# Ver targets
+# List targets
 [ACME-PT-2025] ai-ops > :target list
 ```
 
-### 3. Establecer Fase de la Operación
+### 3. Set Operation Phase
 
 ```bash
-# Establecer fase actual
+# Set current phase
 [ACME-PT-2025] ai-ops > :phase set
 Available phases:
   1. recon
@@ -65,124 +65,124 @@ Available phases:
 Select phase: 2
 ```
 
-### 4. Modo Shell (Auto-logging)
+### 4. Shell Mode (Auto-logging)
 
 ```bash
-# Activar modo shell
+# Enable shell mode
 [ACME-PT-2025] ai-ops > shell
 Shell mode: enabled
 
-# Todos los comandos se ejecutan y loguean automáticamente
+# All commands are executed and logged automatically
 [ACME-PT-2025] $ → DC01 > nmap -sV -p- 192.168.1.50
 [ACME-PT-2025] $ → DC01 > crackmapexec smb 192.168.1.50 -u users.txt -p passwords.txt
 
-# Salir del modo shell
+# Exit shell mode
 [ACME-PT-2025] $ → DC01 > shell
 Shell mode: disabled
 ```
 
-### 5. Logging Manual
+### 5. Manual Logging
 
-Para acciones que no son CLI (RDP, GUI tools, etc.):
+For non-CLI actions (RDP, GUI tools, etc.):
 
 ```bash
-# Log completo
+# Full log entry
 [ACME-PT-2025] ai-ops > :log
-Description: Acceso RDP a DC01 como administrator
+Description: RDP access to DC01 as administrator
 Action type: rdp
 Tool name (optional): mstsc
 Tags (comma-separated, optional): lateral_movement, admin_access
 
-# Nota rápida
+# Quick note
 [ACME-PT-2025] ai-ops > :note
-Note: Encontrado hash NTLM del Domain Admin en memoria
+Note: Found NTLM hash for Domain Admin in memory
 ```
 
-### 6. Ver y Exportar Logs
+### 6. View and Export Logs
 
 ```bash
-# Ver logs recientes
+# View recent logs
 [ACME-PT-2025] ai-ops > :logs
 Number of logs to show: 50
 
-# Ver estadísticas
+# View statistics
 [ACME-PT-2025] ai-ops > :stats
 
-# Sincronizar logs al servidor central
+# Sync logs to central server
 [ACME-PT-2025] ai-ops > :sync
 Found 47 unsynced log(s)
 Sync to http://127.0.0.1:8000? (y/n): y
 Syncing...
 ✓ Successfully synced 47 log(s)
 
-# Exportar para el SOC (backup local)
+# Export for SOC (local backup)
 [ACME-PT-2025] ai-ops > :export
 Export format (json/csv): json
 ✓ Exported 127 logs to oplog_ACME-PT-2025_20251107.json
 ```
 
-### 7. Usar el Asistente de IA
+### 7. Use the AI Assistant
 
 ```bash
-# Modo chat normal (mantiene la funcionalidad original)
+# Normal chat mode (keeps original functionality)
 [ACME-PT-2025] ai-ops > chat
 
-# Preguntar al agente de IA
-ACME-PT-2025 (1) > ¿Cómo puedo extraer credenciales de LSASS?
-ACME-PT-2025 (1) > Genera un payload para bypass AMSI
+# Ask the AI agent
+ACME-PT-2025 (1) > How can I extract credentials from LSASS?
+ACME-PT-2025 (1) > Generate a payload for AMSI bypass
 
-# Volver al modo normal
+# Return to normal mode
 ACME-PT-2025 (1) > back
 ```
 
-## 📊 Tipos de Acciones Loguéables
+## 📊 Loggable Action Types
 
-- `command` - Comandos CLI (auto)
-- `rdp` - Sesiones RDP
-- `gui_tool` - Herramientas GUI (Burp, Metasploit GUI, etc.)
-- `manual` - Acción manual
-- `note` - Nota general
-- `file_transfer` - Transferencia de archivos
-- `exploit` - Ejecución de exploit
-- `credential` - Obtención de credenciales
-- `persistence` - Mecanismos de persistencia
-- `lateral_movement` - Movimiento lateral
-- `privesc` - Escalada de privilegios
-- `exfil` - Exfiltración de datos
+- `command` - CLI commands (auto)
+- `rdp` - RDP sessions
+- `gui_tool` - GUI tools (Burp, Metasploit GUI, etc.)
+- `manual` - Manual action
+- `note` - General note
+- `file_transfer` - File transfers
+- `exploit` - Exploit execution
+- `credential` - Credential harvesting
+- `persistence` - Persistence mechanisms
+- `lateral_movement` - Lateral movement
+- `privesc` - Privilege escalation
+- `exfil` - Data exfiltration
 
-## 🎨 Características Avanzadas
+## 🎨 Advanced Features
 
-### Filtrado de Auto-logging
+### Auto-logging Filtering
 
-Por defecto, estos comandos NO se loguean (son triviales):
+By default, these commands are NOT logged (trivial):
 - ls, cd, pwd, clear, exit, history
 
-Puedes desactivar el auto-logging:
+You can disable auto-logging:
 ```bash
 [ACME-PT-2025] ai-ops > :toggle autolog
 Auto-logging: disabled
 ```
 
-### Estructura de la Base de Datos
+### Database Structure
 
-Los logs se guardan en: `~/.aiops/oplog/operations.db` (SQLite)
+Logs are stored in: `~/.aiops/oplog/operations.db` (SQLite)
 
-Cada entrada contiene:
+Each entry contains:
 - Timestamp
-- Operador (usuario del sistema)
-- Hostname (máquina del operador)
+- Operator (system username)
+- Hostname (operator's machine)
 - Operation ID
 - Target ID
-- Fase
-- Tipo de acción
-- Comando/Descripción
-- Output (primeros 500 chars)
+- Phase
+- Action type
+- Command/Description
+- Output (first 500 chars)
 - Tags
-- Estado de sincronización
+- Sync status
 
-### Formato de Export
+### Export Formats
 
-**JSON** (completo):
+**JSON** (complete):
 ```json
 {
   "timestamp": "2025-11-07T14:30:00",
@@ -201,91 +201,91 @@ Cada entrada contiene:
 }
 ```
 
-**CSV** (para import a Excel/SIEM):
+**CSV** (for Excel/SIEM import):
 ```
 timestamp,operator,hostname,action_type,command,description,target_id,phase
 2025-11-07T14:30:00,john.doe,kali-ws01,command,nmap...,Executed: nmap...,3,exploitation
 ```
 
-## 🌐 Sincronización con Servidor Central
+## 🌐 Central Server Synchronization
 
-### Configuración del Servidor
+### Server Setup
 
-El servidor central debe ejecutar el backend de AI-OPS:
+The central server should run the AI-OPS backend:
 
 ```bash
-# En el servidor central
+# On the central server
 cd AI-OPS
 python3 -m uvicorn src.api:app --host 0.0.0.0 --port 8000
 
-# O con Docker
+# Or with Docker
 docker-compose up -d
 ```
 
-### Sincronización de Logs
+### Log Synchronization
 
-**Manual (recomendado):**
+**Manual (recommended):**
 ```bash
-# Sincronizar logs cuando termines tu sesión
+# Sync logs when you finish your session
 [ACME-PT-2025] ai-ops > :sync
 ```
 
-**Verificar estado de sync:**
+**Check sync status:**
 ```bash
-# Ver cuántos logs faltan sincronizar
+# See how many logs need syncing
 [ACME-PT-2025] ai-ops > :stats
 Total logs: 127
-Unsynced logs: 47  # <-- logs pendientes
+Unsynced logs: 47  # <-- pending logs
 ```
 
-### Endpoints de API Disponibles
+### Available API Endpoints
 
-El servidor central expone estos endpoints:
+The central server exposes these endpoints:
 
-| Endpoint | Método | Descripción |
+| Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/oplog/sync` | POST | Sincronizar logs desde cliente |
-| `/oplog/logs` | GET | Obtener logs consolidados |
-| `/oplog/operations` | GET | Listar todas las operaciones |
-| `/oplog/stats` | GET | Estadísticas globales |
-| `/oplog/targets` | GET | Listar todos los targets |
+| `/oplog/sync` | POST | Sync logs from client |
+| `/oplog/logs` | GET | Get consolidated logs |
+| `/oplog/operations` | GET | List all operations |
+| `/oplog/stats` | GET | Global statistics |
+| `/oplog/targets` | GET | List all targets |
 | `/oplog/health` | GET | Health check |
 
-### Consultar Logs Consolidados (Red Team Lead)
+### Query Consolidated Logs (Red Team Lead)
 
-Como Red Team Lead, puedes consultar todos los logs del equipo vía API:
+As Red Team Lead, you can query all team logs via API:
 
 ```bash
-# Ver todos los logs de una operación
-curl http://servidor:8000/oplog/logs?operation_id=1&limit=100
+# View all logs for an operation
+curl http://server:8000/oplog/logs?operation_id=1&limit=100
 
-# Ver logs de un operador específico
-curl http://servidor:8000/oplog/logs?operator=john.doe
+# View logs from a specific operator
+curl http://server:8000/oplog/logs?operator=john.doe
 
-# Ver estadísticas globales
-curl http://servidor:8000/oplog/stats
+# View global statistics
+curl http://server:8000/oplog/stats
 
-# Ver estadísticas de una operación
-curl http://servidor:8000/oplog/stats?operation_id=1
+# View operation-specific statistics
+curl http://server:8000/oplog/stats?operation_id=1
 ```
 
-### Arquitectura de Sincronización
+### Synchronization Architecture
 
 ```
 ┌─────────────────────────────────────────────┐
 │  Operator 1 (Kali)                          │
 │  - Local SQLite: ~/.aiops/oplog/operations.db
-│  - Ejecuta comandos → auto-log             │
-│  - :sync → envía al servidor               │
+│  - Execute commands → auto-log              │
+│  - :sync → send to server                   │
 └──────────────┬──────────────────────────────┘
                │
                │ HTTP POST /oplog/sync
                ▼
 ┌─────────────────────────────────────────────┐
-│  Servidor Central (Team Server)             │
-│  - Base de datos centralizada               │
-│  - Consolida logs de todos los operadores  │
-│  - API REST para consultas                  │
+│  Central Server (Team Server)               │
+│  - Centralized database                     │
+│  - Consolidates logs from all operators     │
+│  - REST API for queries                     │
 └──────────────┬──────────────────────────────┘
                ▲
                │ HTTP POST /oplog/sync
@@ -293,115 +293,116 @@ curl http://servidor:8000/oplog/stats?operation_id=1
 ┌──────────────┴──────────────────────────────┐
 │  Operator 2 (Windows)                       │
 │  - Local SQLite: ~/.aiops/oplog/operations.db
-│  - Ejecuta comandos → auto-log             │
-│  - :sync → envía al servidor               │
+│  - Execute commands → auto-log              │
+│  - :sync → send to server                   │
 └─────────────────────────────────────────────┘
 ```
 
 ### Offline-First Design
 
-- **Funciona sin conexión**: Los logs se guardan localmente aunque el servidor esté caído
-- **Sincronización diferida**: Cuando el servidor vuelve, ejecuta `:sync` para enviar todo
-- **Sin pérdida de datos**: Todos los logs están en SQLite local como backup
-- **Flag de sync**: Cada log tiene un flag `synced` para saber qué falta enviar
+- **Works offline**: Logs are saved locally even if server is down
+- **Deferred sync**: When server returns, run `:sync` to send everything
+- **No data loss**: All logs are in local SQLite as backup
+- **Sync flag**: Each log has a `synced` flag to track pending uploads
 
-## 🔄 Workflow Recomendado
+## 🔄 Recommended Workflow
 
-### Para el Red Team Lead:
+### For Red Team Lead:
 
-1. **Inicio de Engagement**:
-   - Crear operación con `:op new`
-   - Compartir ID con el equipo
-   - Crear targets iniciales con `:target new`
+1. **Engagement Start**:
+   - Create operation with `:op new`
+   - Share ID with team
+   - Create initial targets with `:target new`
 
-2. **Durante la Operación**:
-   - Revisar actividad con `:logs` y `:stats`
-   - Verificar que el equipo esté logueando
+2. **During Operation**:
+   - Review activity with `:logs` and `:stats`
+   - Verify team is logging properly
 
-3. **Fin de Día/Engagement**:
-   - Exportar logs con `:export`
-   - Enviar al SOC para correlación
-   - Archivar para el reporte final
+3. **End of Day/Engagement**:
+   - Export logs with `:export`
+   - Send to SOC for correlation
+   - Archive for final report
 
-### Para los Operadores:
+### For Operators:
 
-1. **Inicio de Sesión**:
+1. **Session Start**:
    ```bash
-   :op set  # Establecer operación activa
-   :target set  # Establecer target actual
-   :phase set  # Establecer fase
-   shell  # Activar modo shell
+   :op set  # Set active operation
+   :target set  # Set current target
+   :phase set  # Set phase
+   shell  # Enable shell mode
    ```
 
-2. **Durante el Trabajo**:
-   - Comandos automáticamente logueados
-   - Para RDP/GUI: `:log` o `:note`
-   - Cambiar target cuando sea necesario: `:target set`
+2. **During Work**:
+   - Commands automatically logged
+   - For RDP/GUI: `:log` or `:note`
+   - Change target as needed: `:target set`
 
-3. **Fin de Sesión**:
-   - Revisar logs del día: `:logs`
-   - Asegurar que todo está documentado
+3. **Session End**:
+   - Review daily logs: `:logs`
+   - Ensure everything is documented
+   - Sync to server: `:sync`
 
-## 🤖 Integración con IA
+## 🤖 AI Integration
 
-Puedes consultar al agente de IA sobre tus logs:
+You can query the AI agent about your logs:
 
 ```bash
-# Modo chat
+# Chat mode
 chat
 
-# Preguntas útiles
-> Resume las acciones realizadas hoy contra DC01
-> ¿Qué comandos fallaron en la fase de explotación?
-> Genera un reporte ejecutivo de esta operación
-> ¿Qué credenciales hemos obtenido hasta ahora?
+# Useful queries
+> Summarize today's actions against DC01
+> Which commands failed during exploitation phase?
+> Generate executive report for this operation
+> What credentials have we obtained so far?
 ```
 
-## 🔒 Seguridad
+## 🔒 Security
 
-- **Datos sensibles**: Usa el flag `sensitive` para marcar logs con credenciales
-- **Ofuscación**: El sistema NO ofusca automáticamente (hazlo manualmente si es necesario)
-- **Permisos**: La base de datos se crea con permisos 600 (solo tu usuario)
-- **Offline-first**: Funciona sin conexión, sincroniza después
+- **Sensitive data**: Use the `sensitive` flag to mark logs with credentials
+- **Obfuscation**: System does NOT obfuscate automatically (do it manually if needed)
+- **Permissions**: Database is created with 600 permissions (owner only)
+- **Offline-first**: Works without connection, syncs later
 
-## 🚧 Próximas Funcionalidades
+## 🚧 Upcoming Features
 
-- [x] Servidor central para sincronización ✅
-- [x] API REST para consulta de logs ✅
-- [ ] Dashboard web para visualización
-- [ ] Alertas automáticas (ej: credenciales obtenidas)
-- [ ] Integración con SIEM (Splunk, ELK)
-- [ ] Generación automática de reportes
-- [ ] Auto-sync en background (opcional)
+- [x] Central server for synchronization ✅
+- [x] REST API for log queries ✅
+- [ ] Web dashboard for visualization
+- [ ] Automatic alerts (e.g., credentials obtained)
+- [ ] SIEM integration (Splunk, ELK)
+- [ ] Automatic report generation
+- [ ] Background auto-sync (optional)
 
-## 📝 Comandos Rápidos de Referencia
+## 📝 Quick Reference Commands
 
-| Comando | Descripción |
+| Command | Description |
 |---------|-------------|
-| `shell` | Toggle modo shell |
-| `:op new/list/set/info` | Gestión de operaciones |
-| `:target new/list/set` | Gestión de targets |
-| `:phase set` | Establecer fase |
-| `:log` | Log manual completo |
-| `:note` | Nota rápida |
-| `:logs` | Ver logs |
-| `:stats` | Estadísticas |
-| `:export` | Exportar para SOC |
-| `:sync` | Sincronizar con servidor |
+| `shell` | Toggle shell mode |
+| `:op new/list/set/info` | Operation management |
+| `:target new/list/set` | Target management |
+| `:phase set` | Set phase |
+| `:log` | Full manual log |
+| `:note` | Quick note |
+| `:logs` | View logs |
+| `:stats` | Statistics |
+| `:export` | Export for SOC |
+| `:sync` | Sync to server |
 | `:toggle autolog` | Toggle auto-logging |
-| `chat` | Asistente de IA |
-| `help` | Ayuda completa |
+| `chat` | AI Assistant |
+| `help` | Full help |
 
 ## 💡 Tips
 
-1. **Usa nombres descriptivos** para operations y targets
-2. **Cambia la fase** según progresas para mejor organización
-3. **Sincroniza regularmente** con `:sync` para consolidar logs del equipo
-4. **Exporta como backup** para evitar pérdida de datos
-5. **Agrega notas** para contexto que los comandos no capturan
-6. **Revisa los logs** al final del día para verificar completitud
-7. **Verifica el estado de sync** con `:stats` antes de terminar tu sesión
+1. **Use descriptive names** for operations and targets
+2. **Change phase** as you progress for better organization
+3. **Sync regularly** with `:sync` to consolidate team logs
+4. **Export as backup** to avoid data loss
+5. **Add notes** for context that commands don't capture
+6. **Review logs** at end of day to verify completeness
+7. **Check sync status** with `:stats` before ending your session
 
 ---
 
-**¿Problemas o sugerencias?** Abre un issue en el repositorio.
+**Issues or suggestions?** Open an issue in the repository.
