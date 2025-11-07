@@ -119,6 +119,7 @@ class AgentClient:
             ':op list': self.op_list,
             ':op set': self.op_set,
             ':op info': self.op_info,
+            ':op delete': self.op_delete,
             ':target set': self.target_set,
             ':target new': self.target_new,
             ':target list': self.target_list,
@@ -567,57 +568,72 @@ class AgentClient:
 
     def execute_shell_command(self, command: str):
         """Execute a shell command and log it"""
+        import time
+        from pathlib import Path
+
         try:
-            # Execute command with real-time output streaming
-            process = subprocess.Popen(
-                command,
+            # Create log directory if auto-logging enabled and we have an operation
+            log_file = None
+            if self.opcontext.auto_log and self.opcontext.operation:
+                log_dir = Path.home() / '.aiops' / 'oplog' / 'command_logs' / str(self.opcontext.operation.id)
+                log_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = time.strftime('%Y%m%d_%H%M%S')
+                cmd_safe = command[:30].replace('/', '_').replace(' ', '_')
+                log_file = log_dir / f"{timestamp}_{cmd_safe}.log"
+
+            # Execute command with output going directly to terminal AND log file
+            if log_file:
+                # Use tee to show output and save to file
+                full_command = f"{{ {command}; }} 2>&1 | tee {log_file}"
+            else:
+                full_command = command
+
+            # Execute without capturing - output goes directly to terminal
+            start_time = time.time()
+            result = subprocess.run(
+                full_command,
                 shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1  # Line buffered
+                timeout=300  # 5 minute timeout for long commands
             )
+            elapsed = time.time() - start_time
 
-            # Collect output for logging while displaying in real-time
-            output_lines = []
+            success = result.returncode == 0
 
-            try:
-                # Stream output in real-time
-                for line in iter(process.stdout.readline, ''):
-                    if line:
-                        # Display immediately
-                        print(line, end='')
-                        output_lines.append(line)
-
-                # Wait for process to complete with timeout
-                process.wait(timeout=30)
-
-            except subprocess.TimeoutExpired:
-                process.kill()
-                self.console.print("\n[red]Command timed out (30s limit)[/]")
-                return False
-
-            output = ''.join(output_lines)
-            success = process.returncode == 0
+            # Read log file for database entry if it exists
+            output_preview = None
+            if log_file and log_file.exists():
+                try:
+                    with open(log_file, 'r') as f:
+                        output_preview = f.read(500)  # First 500 chars for DB
+                except:
+                    pass
 
             # Auto-log if enabled
             if self.opcontext.auto_log:
                 # Check if command should be filtered
                 cmd_base = command.split()[0] if command.split() else command
                 if cmd_base not in self.opcontext.log_filter:
-                    self.oplog.add_log(
+                    log_entry = self.oplog.add_log(
                         action_type=ActionType.COMMAND,
                         description=f"Executed: {command}",
                         command=command,
-                        output=output[:500] if output else None,  # Limit output size
+                        output=output_preview,
                         success=success,
                         operation_id=self.opcontext.operation.id if self.opcontext.operation else None,
                         target_id=self.opcontext.current_target.id if self.opcontext.current_target else None,
                         phase=self.opcontext.current_phase
                     )
 
+                    # Show log info
+                    if log_file:
+                        self.console.print(f"[dim]💾 Output saved to: {log_file}[/]")
+                        self.console.print(f"[dim]⏱️  Execution time: {elapsed:.2f}s | Return code: {result.returncode}[/]")
+
             return success
 
+        except subprocess.TimeoutExpired:
+            self.console.print("\n[red]Command timed out (5 minute limit)[/]")
+            return False
         except Exception as e:
             self.console.print(f"[red]Error executing command: {e}[/]")
             return False
@@ -706,6 +722,59 @@ class AgentClient:
         if stats['by_type']:
             self.console.print(f"  By type: {stats['by_type']}")
         self.console.print()
+
+    def op_delete(self):
+        """Delete an operation and all associated data"""
+        # Show operations first
+        ops = self.oplog.list_operations()
+        if not ops:
+            self.console.print("[yellow]No operations found[/]")
+            return
+
+        # Show list
+        table = Table(title="Operations")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Client")
+        table.add_column("Start Date")
+        table.add_column("Active", style="yellow")
+
+        for op in ops:
+            table.add_row(
+                str(op.id),
+                op.name,
+                op.client or "-",
+                op.start_date.strftime('%Y-%m-%d'),
+                "✓" if op.is_active else ""
+            )
+
+        self.console.print(table)
+
+        # Ask for ID to delete
+        try:
+            op_id = int(Prompt.ask("Operation ID to delete", console=self.console))
+
+            # Confirm
+            confirm = Prompt.ask(
+                f"[red]⚠️  Delete operation {op_id} and ALL associated logs/targets? (yes/no)[/]",
+                console=self.console
+            )
+
+            if confirm.lower() == 'yes':
+                if self.oplog.delete_operation(op_id):
+                    self.console.print(f"[green]✓ Operation {op_id} deleted[/]")
+
+                    # Clear context if deleted operation was active
+                    if self.opcontext.operation and self.opcontext.operation.id == op_id:
+                        self.opcontext.operation = None
+                        self.opcontext.current_target = None
+                        self.console.print("[yellow]Active operation cleared[/]")
+                else:
+                    self.console.print("[red]Failed to delete operation[/]")
+            else:
+                self.console.print("[yellow]Cancelled[/]")
+        except ValueError:
+            self.console.print("[red]Invalid operation ID[/]")
 
     # ==================== TARGET MANAGEMENT ====================
 
@@ -1021,6 +1090,7 @@ class AgentClient:
         self.console.print("- [bold cyan]:op list[/]        : List all operations")
         self.console.print("- [bold cyan]:op set[/]         : Set active operation")
         self.console.print("- [bold cyan]:op info[/]        : Show current operation info")
+        self.console.print("- [bold cyan]:op delete[/]      : Delete an operation and all associated data")
 
         self.console.print("\n[bold red]Target Management[/]")
         self.console.print("- [bold cyan]:target new[/]     : Create a new target")

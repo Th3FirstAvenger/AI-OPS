@@ -209,6 +209,24 @@ class OperationLog:
             conn.commit()
             logger.info(f"Set active operation: {operation_id}")
 
+    def delete_operation(self, operation_id: int) -> bool:
+        """Delete an operation and all associated logs and targets"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                # Delete associated log entries
+                cursor.execute("DELETE FROM log_entries WHERE operation_id = ?", (operation_id,))
+                # Delete associated targets
+                cursor.execute("DELETE FROM targets WHERE operation_id = ?", (operation_id,))
+                # Delete operation
+                cursor.execute("DELETE FROM operations WHERE id = ?", (operation_id,))
+                conn.commit()
+                logger.info(f"Deleted operation ID: {operation_id} and all associated data")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete operation {operation_id}: {e}")
+                return False
+
     # === TARGETS ===
 
     def create_target(self, target: Target) -> int:
